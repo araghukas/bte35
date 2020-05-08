@@ -49,10 +49,10 @@ class RodeSolver(object):
     """
 
     # temperature gradient (arbitrary, cancelled out)
-    gradT = 1e3  # [K/m]
+    dTdx = 1e3  # [K/m]
 
     # field strength (arbitrary, cancelled out)
-    F = 1e4  # [V/m]
+    eps_field = 1e4  # [V/m]
 
     def __init__(self, mat, T, Rc, n=None, p=None, num_k=10000, k_MIN=2e6):
 
@@ -83,7 +83,7 @@ class RodeSolver(object):
         self.k_MAX = None  # [1/m] maximum wave number, effectively infinity
 
         # average energy (set by `Ebar` method)
-        self.Ebar_ = None
+        self._EJ = None
 
         # dopant compensation ratio
         self._Rc = Rc
@@ -169,7 +169,7 @@ class RodeSolver(object):
 
     # MAIN ITERATOR FUNCTIONS
     # -----------------------
-    def g_dist(self, i, typ):
+    def g_dist(self, i, xi):
         """
         Iterative solver of the B.T.E. with assumptions in Rode #3;
         Rode #3, Eq. (16)
@@ -177,9 +177,8 @@ class RodeSolver(object):
         Parameters:
             i : (int)
                 number of iterations to perform
-            typ : (str)
-                type of perturbation to apply; either of 'F' for small field or 'gradT'
-                for small temperature gradient
+            xi : (array)
+                value of perturbation at each `k`
 
         Returns:
             gk : (numpy.array)
@@ -200,21 +199,8 @@ class RodeSolver(object):
         li_p = self.SPACES['li+']
         li_m = self.SPACES['li-']
 
-        if typ == 'F':
-            perturb = (const.e / const.hbar) * self.F * self.SPACES['dfdk']
-        elif typ == 'gradT':
-            d = self.SPACES['d']
-            E = self.SPACES['E']
-            k = self.SPACES['k']
-            perturb = self.gradT * (
-                    (const.hbar * k) / (const.m_e * d * const.k * self.T**2)
-                    * (self.Ebar_ - E) * fk * (1. - fk)
-            )
-        else:
-            raise ValueError("must specify perturbation type `typ` as 'gradT' or 'F'")
-
         # values over k+ or k- of the previous solution
-        g_previous = self.g_dist(i - 1, typ)  # previous solution over all k
+        g_previous = self.g_dist(i - 1, xi)  # previous solution over all k
         g_prev = interp1d(self.SPACES['k'], g_previous, bounds_error=False, fill_value=0.)
 
         g_p = g_prev(self.SPACES['k+'])
@@ -229,7 +215,7 @@ class RodeSolver(object):
         S_out_ab = (self.Npo + fk_p) * lo_p
         r_el = self.SPACES['r_el']
 
-        return (S_in_em + S_in_ab + perturb) / (S_out_em + S_out_ab + r_el)
+        return (S_in_em + S_in_ab - xi) / (S_out_em + S_out_ab + r_el)
 
     # TRANSPORT COEFFICIENTS
     # ----------------------
@@ -237,16 +223,22 @@ class RodeSolver(object):
         """
         Electron drift mobility [m^2/V/s];
         Rode #3, Eq. (32)
+
+        Formula is equivalent to: sigma / (e * n)
         """
-        g = self.g_dist(i, 'F')
+
         v = self.SPACES['v']
         k = self.SPACES['k']
         f = self.SPACES['f']
+        dfdk = self.SPACES['dfdk']
+
+        xi = -const.e * self.eps_field / const.hbar * dfdk
+        g = self.g_dist(i, xi)
 
         I1 = np.trapz(g * v * k**2, x=k)
         I2 = np.trapz(f * k**2, x=k)
 
-        return 1. / 3. / self.F * I1 / I2
+        return -1. / 3. / self.eps_field * I1 / I2
 
     def sigma(self, i=30):
         """
@@ -254,60 +246,60 @@ class RodeSolver(object):
         Derived from Broido (2001) Eqs. (14-17) or similar;
         equivalent to `n * e * mu`
         """
-        g = self.g_dist(i, 'F')
         v = self.SPACES['v']
         k = self.SPACES['k']
+        dfdk = self.SPACES['dfdk']
+
+        xi = -const.e * self.eps_field / const.hbar * dfdk
+        g = self.g_dist(i, xi)
 
         I1 = np.trapz(g * v * k**2, x=k)
-        return const.e / 3. / np.pi**2 / self.F * I1
+        return -const.e / (3. * np.pi**2 * self.eps_field) * I1
 
     def S(self, i=30):
         """
         Seebeck Coefficient [V/K]
         Rode #3, Eq. (A5)
         """
+        dfdk = self.SPACES['dfdk']
+        dEfdx = self.SPACES['dEfdx']
+        E = self.SPACES['E']
+
         sigma = self.sigma(i)
-        g = self.g_dist(i, 'gradT')
+
+        xi = -1. / const.hbar * dfdk * (dEfdx + (E - self.Ef) / self.T * self.dTdx)
+        g = self.g_dist(i, xi)
         Jsc = self.J_e(g)
 
-        return 1. / const.e / self.T * (self.Ef - self.Ebar_) + Jsc / sigma / self.gradT
-
-    def gamma_e(self, i=30):
-        """
-        Short-circuit electronic thermal conductivity;
-        Derived from Broido (2001) Eqs. (14-17) or similar
-        """
-        sigma = self.sigma(i)
-        S = self.S(i)
-
-        g = self.g_dist(i, 'gradT')
-        Qsc = self.Q_e(g)
-
-        return sigma * S / const.e * (self.Ef - self.Ebar_) - Qsc / self.gradT
+        return 1. / const.e * dEfdx / self.dTdx - Jsc / (sigma * self.dTdx)
 
     def kappa_e(self, i=30):
         """
         Open-circuit electronic thermal conductivity;
         """
-        sigma = self.sigma(i)
-        S = self.S(i)
-        gamma_e = self.gamma_e(i)
+        dfdk = self.SPACES['dfdk']
+        dEfdx = self.SPACES['dEfdx']
+        E = self.SPACES['E']
 
-        return gamma_e - sigma * S**2 * self.T
+        xi = -1. / const.hbar * dfdk * (dEfdx + (E - self.Ef) / self.T * self.dTdx)
+        g = self.g_dist(i, xi)
+        J_Q_oc = self.J_Q(g)
+
+        return J_Q_oc / self.dTdx
 
     # AVERAGES
     # --------
-    def Ebar(self):
+    def EJ(self):
         """
         The average energy of conduction electrons [J];
         This is kT times the integrals ratio in Rode #3, Eqs. (A5) and (A6)
         """
         k = self.SPACES['k']
-        f = self.SPACES['f']
+        f0 = self.SPACES['f']
         E = self.SPACES['E']
 
-        I1 = np.trapz(k**2 * f * (1. - f) * E, x=k)
-        I2 = np.trapz(k**2 * f * (1. - f), x=k)
+        I1 = np.trapz(k**2 * f0 * (1. - f0) * E, x=k)
+        I2 = np.trapz(k**2 * f0 * (1. - f0), x=k)
 
         return I1 / I2
 
@@ -320,10 +312,10 @@ class RodeSolver(object):
         k = self.SPACES['k']
         v = self.SPACES['v']
 
-        j = 1. / 3. / const.pi**2 * np.trapz(k**2 * v * g, x=k)
-        return const.e * j
+        j = 1. / (3. * const.pi**2) * np.trapz(k**2 * v * g, x=k)
+        return -const.e * j
 
-    def Q_e(self, g):
+    def J_Q(self, g):
         """
         Electronic component of heat flux density [W/m^2];
         """
@@ -681,7 +673,10 @@ class RodeSolver(object):
         self.SPACES['f-'] = self.fk(self.SPACES['k-'], self.Ef, self.T)
 
         # average energy of mobile electrons
-        self.Ebar_ = self.Ebar()
+        self._EJ = self.EJ()
+
+        # space derivative of Fermi-Energy
+        self.SPACES['dEfdx'] = 1. / self.T * (self.Ef - self._EJ) * self.dTdx
 
         # k-derivative of Fermi-Dirac distribution function
         self.SPACES['dfdk'] = self.dfdk(ks, self.Ef)

@@ -719,7 +719,6 @@ def screen_test(T1, T2):
     ax.legend()
     ax2.legend()
 
-
     plt.show()
 
 
@@ -730,7 +729,7 @@ if __name__ == "__main__":
     # R3F2(30, 100)
     # R3F3(30, 50)
     # R3F5(30, 50)
-    # R3F6(30, 50)
+    R3F6(30, 50)
     # R3F7(30, 50)
     # R3F9(30, 30)
     # R3F11(30, 50)
@@ -739,7 +738,7 @@ if __name__ == "__main__":
 
     # scatter_rates(n_linear=1e6 * 1e2, R=100e-10, T=300)
     # fishman_fig3(1e6 * 1e2, 100e-10)
-    Lee_fig2(T=50)
+    # Lee_fig2(T=50)
     # Lee_fig5(T=20)
     # screen_test(T1=12, T2=300)
     pass
