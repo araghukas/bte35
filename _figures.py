@@ -82,9 +82,8 @@ def nanowire_scattering_rates(show=True, save=False,
 
 def nw_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6):
     nwsolver = NWRTAsolver(mat, T, R, n=n)
-    kpo = np.sqrt(2 * nwsolver.meG * nwsolver.Epo) / const.hbar
-
     m = nwsolver.meG
+    kpo = np.sqrt(2 * m * nwsolver.Epo) / const.hbar
 
     fig = plt.figure(figsize=(8, 3.5))
     plt.subplots_adjust(bottom=.2, wspace=.3, hspace=.1)
@@ -106,6 +105,7 @@ def nw_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6)
     ax1.set_ylim(1e9, 1e16)
     ax1.set_xlim(0, 4)
     ax1.set_ylabel(r"Scattering Rate [s$^{-1}$]", fontsize=15)
+    ax1.text(.9, .9, "a.", fontsize=16, transform=ax1.transAxes)
     ax1.legend()
 
     ax2 = fig.add_subplot(122)
@@ -119,6 +119,7 @@ def nw_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6)
     ax2.arrow(x=.63, y=.23, dx=-.1, dy=-.1, head_width=.015, fc='k', transform=ax2.transAxes)
     ax2.set_xlim(0, 4)
     ax2.set_ylabel(r"$-v(k)g(k)$ (normalized)", fontsize=15)
+    ax2.text(.9, .9, "b.", fontsize=16, transform=ax2.transAxes)
     # ax2.legend()
 
     fig.text(.5, .025, r"Electron Wave Vector [$\sqrt{2 m^{*} E_\mathrm{po}} / \hbar$]",
@@ -130,7 +131,62 @@ def nw_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6)
         plt.show()
 
 
+def bulk_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6):
+    solver = RodeSolver(mat, T=300, Rc=1, n=1e17 * 1e6)
+    m = solver.mat.get_meG(T)
+    f = solver.SPACES['f']
+    Npo = solver.Npo
+    kpo = np.sqrt(2. * m * solver.Epo) / const.hbar
+    ks = solver.SPACES['k']
+
+    fig = plt.figure(figsize=(8, 3.5))
+    plt.subplots_adjust(bottom=.2, wspace=.3, hspace=.1)
+
+    ax1 = fig.add_subplot(121)
+    ax1.set_yscale('log')
+    rate_el = solver.SPACES['r_el']
+    S_in_minus = (Npo + f) * solver.SPACES['li-']
+    S_in_plus = (Npo + 1 - f) * solver.SPACES['li+']
+    S_out_minus = (Npo + 1 - f) * solver.SPACES['lo-']
+    S_out_plus = (Npo + f) * solver.SPACES['lo+']
+    ax1.plot(ks / kpo, rate_el, label=r'ac$+$pe$+$ii', linestyle='--')
+    ax1.plot(ks / kpo, S_in_minus, label=r'$S_\mathrm{in}^{-}$')
+    ax1.plot(ks / kpo, S_out_minus, label=r'$S_\mathrm{out}^{-}$')
+    ax1.plot(ks / kpo, S_in_plus, label=r'$S_\mathrm{in}^{+}$')
+    ax1.plot(ks / kpo, S_out_plus, label=r'$S_\mathrm{out}^{+}$')
+    ax1.set_xlim(0, 4)
+    ax1.set_ylim(1e8, 1e14)
+    ax1.set_ylabel(r"Scattering Rate [s$^{-1}$]", fontsize=15)
+    ax1.text(.9, .9, "a.", fontsize=16, transform=ax1.transAxes)
+    ax1.legend(loc='lower right')
+
+    ax2 = fig.add_subplot(122)
+    gF = solver.g_dist(30, 'F')
+    gT = solver.g_dist(30, 'gradT')
+    vk = solver.SPACES['v']
+    ax2.plot(ks / kpo, -ks**2 * vk * gF / np.max(np.abs(-ks**2 * vk * gF)), label='F',
+             color=u'#4b0082')
+    ax2.plot(ks / kpo, -ks**2 * vk * gT / np.max(np.abs(-ks**2 * vk * gT)), label='gradT',
+             color=u'#d2691e')
+    ax2.set_xlim(0, 4)
+    ax2.set_ylabel(r"-$k^{2}v(k)g(k)$ (normalized)", fontsize=15)
+    ax2.text(.53, .82, r"$\varepsilon=0$", transform=ax2.transAxes, fontsize=15)
+    ax2.text(.70, .45, r"$\frac{dT}{dx}=0$", transform=ax2.transAxes, fontsize=15)
+    ax2.arrow(x=.68, y=.43, dx=-.1, dy=-.1, head_width=.015, fc='k', transform=ax2.transAxes)
+    ax2.text(.9, .9, "b.", fontsize=16, transform=ax2.transAxes)
+    # ax2.legend()
+
+    fig.text(.5, .025, r"Electron Wave Vector [$\sqrt{2 m^{*} E_\mathrm{po}} / \hbar$]",
+             va='bottom', ha='center', fontsize=15)
+
+    if save:
+        plt.savefig(path.expanduser("~/Dropbox/Code/bte35/figures/bulk_total_tau_vkgk.pdf"))
+    if show:
+        plt.show()
+
+
 if __name__ == '__main__':
     # nanowire_scattering_rates(show=True, save=True)
     nw_tau_and_gk(show=True, save=True)
+    # bulk_tau_and_gk(show=True, save=True)
     pass

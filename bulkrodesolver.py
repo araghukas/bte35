@@ -208,7 +208,7 @@ class RodeSolver(object):
             k = self.SPACES['k']
             perturb = self.gradT * (
                     (const.hbar * k) / (const.m_e * d * const.k * self.T**2)
-                    * (E - self.Ebar_) * fk * (1. - fk)
+                    * (self.Ebar_ - E) * fk * (1. - fk)
             )
         else:
             raise ValueError("must specify perturbation type `typ` as 'gradT' or 'F'")
@@ -229,7 +229,7 @@ class RodeSolver(object):
         S_out_ab = (self.Npo + fk_p) * lo_p
         r_el = self.SPACES['r_el']
 
-        return (S_in_em + S_in_ab - perturb) / (S_out_em + S_out_ab + r_el)
+        return (S_in_em + S_in_ab + perturb) / (S_out_em + S_out_ab + r_el)
 
     # TRANSPORT COEFFICIENTS
     # ----------------------
