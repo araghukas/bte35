@@ -80,8 +80,9 @@ def nanowire_scattering_rates(show=True, save=False,
         plt.show()
 
 
-def nw_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6):
+def nwrta_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6):
     nwsolver = NWRTAsolver(mat, T, R, n=n)
+    Ef = nwsolver.Ef
     m = nwsolver.meG
     kpo = np.sqrt(2 * m * nwsolver.Epo) / const.hbar
 
@@ -89,6 +90,8 @@ def nw_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6)
     plt.subplots_adjust(bottom=.2, wspace=.3, hspace=.1)
 
     ks = np.linspace(1e4, 4. * kpo, 1000)
+    Es = nwsolver.E_CB(ks)
+    dfdks = nwsolver.dfdk(ks, Ef, T)
 
     ax1 = fig.add_subplot(121)
     ax1.set_yscale('log')
@@ -109,14 +112,20 @@ def nw_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6)
     ax1.legend()
 
     ax2 = fig.add_subplot(122)
-    gF = nwsolver.g_dist(ks, gradT=0, F=1e4)
-    gT = nwsolver.g_dist(ks, gradT=1e3, F=0)
+    # g(k) in general is:
+    # tau(k)/hbar * dfdk * (e*epslion + dEfdx + (E-Ef)/T * dTdx)
+    tau = 1. / rate_tot
+    g_dTdx_is_0 = tau / const.hbar * dfdks * const.e * nwsolver.eps_field
+    g_eps_is_0 = tau / const.hbar * dfdks * (nwsolver.dEfdx() + (Es - Ef) / T * nwsolver.dTdx)
     vk = const.hbar * ks / m
-    ax2.plot(ks / kpo, -vk * gF / np.max(np.abs(vk * gF)), label='F', color=u'#4b0082')
-    ax2.plot(ks / kpo, -vk * gT / np.max(np.abs(vk * gT)), label='T', color=u'#d2691e')
-    ax2.text(.47, .45, r"$\mathrm{F}=0$", transform=ax2.transAxes, fontsize=15)
+    ax2.plot(ks / kpo, -vk * g_dTdx_is_0 / np.max(np.abs(vk * g_dTdx_is_0)),
+             label='F', color=u'#4b0082')
+    ax2.plot(ks / kpo, -vk * g_eps_is_0 / np.max(np.abs(vk * g_eps_is_0)),
+             label='T', color=u'#d2691e')
+    ax2.text(.47, .45, r"$\varepsilon=0$", transform=ax2.transAxes, fontsize=15)
     ax2.text(.65, .25, r"$\frac{dT}{dx}=0$", transform=ax2.transAxes, fontsize=15)
-    ax2.arrow(x=.63, y=.23, dx=-.1, dy=-.1, head_width=.015, fc='k', transform=ax2.transAxes)
+    ax2.arrow(x=.63, y=.23, dx=-.1, dy=-.1, head_width=.015, fc='k',
+              transform=ax2.transAxes)
     ax2.set_xlim(0, 4)
     ax2.set_ylabel(r"$-v(k)g(k)$ (normalized)", fontsize=15)
     ax2.text(.9, .9, "b.", fontsize=16, transform=ax2.transAxes)
@@ -131,8 +140,8 @@ def nw_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6)
         plt.show()
 
 
-def bulk_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6):
-    solver = RodeSolver(mat, T=300, Rc=1, n=1e17 * 1e6)
+def bulk_tau_and_gk(i, show=True, save=False, mat=GaAs, T=300, n=1e17 * 1e6):
+    solver = RodeSolver(mat, T=300, Rc=1, n=n)
     m = solver.mat.get_meG(T)
     f = solver.SPACES['f']
     Npo = solver.Npo
@@ -161,8 +170,17 @@ def bulk_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e
     ax1.legend(loc='lower right')
 
     ax2 = fig.add_subplot(122)
-    gF = solver.g_dist(30, 'F')
-    gT = solver.g_dist(30, 'gradT')
+    dfdk = solver.SPACES['dfdk']
+    dEfdx = solver.SPACES['dEfdx']
+    E = solver.SPACES['E']
+
+    # xi in general is:
+    # -1/hbar * dfdk * (e*epslion + dEfdx + (E-Ef)/T * dTdx)
+    xi_eps_is_0 = -1. / const.hbar * dfdk * (dEfdx + (E - solver.Ef) / solver.T * solver.dTdx)
+    xi_dTdx_is_0 = -const.e / const.hbar * dfdk * solver.eps_field
+    # xi_F_is_0 = -1 / const.hbar * dfdk * (E - solver.Ef) / solver.T * solver.dTdx
+    gF = solver.g_dist(i, xi_dTdx_is_0)
+    gT = solver.g_dist(i, xi_eps_is_0)
     vk = solver.SPACES['v']
     ax2.plot(ks / kpo, -ks**2 * vk * gF / np.max(np.abs(-ks**2 * vk * gF)), label='F',
              color=u'#4b0082')
@@ -185,8 +203,81 @@ def bulk_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e
         plt.show()
 
 
+def nwrta_transport_n(R, num_n, show=True, save=False, T=300):
+    ns = np.logspace(16, 18, num_n)
+    ns *= 1e6
+    mats = [GaAs, InAs, InSb, InP]
+    solvers = {mat: NWRTAsolver(mat, T, R) for mat in mats}
+    sigmas = {}
+    Ss = {}
+    kappas = {}
+    ZTs = {}
+
+    for mat in mats:
+        print("working on {}".format(mat.name))
+        nws = solvers[mat]
+
+        S_vals = np.zeros(ns.shape)
+        sigma_vals = np.zeros(ns.shape)
+        kappa_vals = np.zeros(ns.shape)
+        for i, n in enumerate(ns):
+            nws.n = n
+
+            S = nws.S()
+            sigma = nws.sigma()
+            kappa_e = nws.kappa_e()
+
+            S_vals[i] = S
+            sigma_vals[i] = sigma
+            kappa_vals[i] = kappa_e
+
+        Ss[mat] = S_vals
+        sigmas[mat] = sigma_vals
+        kappas[mat] = kappa_vals
+        ZTs[mat] = S_vals**2 * sigma_vals * T / (kappa_vals + mat.kappa_bulk)
+
+    colors = {GaAs: 'r', InAs: 'g', InSb: 'b', InP: u'#daa520'}
+    ns_x = ns / 1e6
+
+    fig = plt.figure(figsize=(8, 7))
+    plt.subplots_adjust(bottom=.2, wspace=.3, hspace=.3)
+
+    # Seebeck plot
+    ax1 = fig.add_subplot(221)
+    for mat in mats:
+        ax1.plot(ns_x, -Ss[mat] * 1e6, color=colors[mat], label=mat.name)
+    ax1.legend()
+    ax1.set_xscale('log')
+
+    # sigma plot
+    ax2 = fig.add_subplot(222)
+    for mat in mats:
+        ax2.plot(ns_x, sigmas[mat] / 1e2, color=colors[mat])
+    ax2.set_xscale('log')
+    ax2.set_yscale('log')
+
+    # kappa plot
+    ax3 = fig.add_subplot(223)
+    for mat in mats:
+        ax3.plot(ns_x, kappas[mat], color=colors[mat])
+    ax3.set_xscale('log')
+    ax3.set_yscale('log')
+
+    # ZT plot
+    ax4 = fig.add_subplot(224)
+    for mat in mats:
+        ax4.plot(ns_x, ZTs[mat], color=colors[mat])
+    ax4.set_xscale('log')
+
+    if save:
+        plt.savefig(path.expanduser("~/Dropbox/Code/bte35/figures/nwrta_transport.pdf"))
+    if show:
+        plt.show()
+
+
 if __name__ == '__main__':
     # nanowire_scattering_rates(show=True, save=True)
-    nw_tau_and_gk(show=True, save=True)
-    # bulk_tau_and_gk(show=True, save=True)
+    # nwrta_tau_and_gk(show=True, save=False)
+    # bulk_tau_and_gk(i=30, show=True, save=False)
+    nwrta_transport_n(R=10e-9, num_n=50, save=False, show=True)
     pass

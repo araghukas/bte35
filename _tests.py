@@ -614,6 +614,9 @@ def fishman_fig3(n_linear, R):
     ax.plot(Ts, mu_TOT * 1e4, label='TOT')
 
     ax.legend()
+
+    ax2 = ax.secondary_yaxis("right")
+    ax3 = ax.secondary_xaxis("top")
     plt.show()
 
 
@@ -722,6 +725,44 @@ def screen_test(T1, T2):
     plt.show()
 
 
+def nw_sigma_test():
+    T = 300
+    R = 15e-9
+    n = 1e18 * 1e6
+    nws = NWRTAsolver(GaAs, T, R, n)
+    print("sigma = {:.5e}".format(nws.sigma()))
+
+
+def nw_S_test():
+    T = 300
+    R = 15e-9
+    n = 1e18 * 1e6
+    nws = NWRTAsolver(GaAs, T, R, n)
+    print("S = {:.5e}".format(nws.S()))
+
+
+def nw_kappa_test():
+    T = 300
+    R = 15e-9
+    n = 1e18 * 1e6
+    nws = NWRTAsolver(GaAs, T, R, n)
+    print("S = {:.5e}".format(nws.kappa_e()))
+
+
+def nw_Ef_test():
+    Efs = np.linspace(-2, 20, 1000) * const.e
+    nws = NWRTAsolver(GaAs, R=1e-9, T=300)
+    n_target = 5e18 * 1e6
+
+    ns = np.zeros(Efs.shape)
+    for i, Ef in enumerate(Efs):
+        ns[i] = nws.calculate_n(Ef, 300)
+
+    plt.plot(Efs / const.e, ns / 1e6)
+    plt.yscale('log')
+    plt.show()
+
+
 if __name__ == "__main__":
     # g_convergence_test(GaAs, 300, 0., 1e22, typ='F', i_max=20)
 
@@ -729,7 +770,7 @@ if __name__ == "__main__":
     # R3F2(30, 100)
     # R3F3(30, 50)
     # R3F5(30, 50)
-    R3F6(30, 50)
+    # R3F6(30, 50)
     # R3F7(30, 50)
     # R3F9(30, 30)
     # R3F11(30, 50)
@@ -741,4 +782,8 @@ if __name__ == "__main__":
     # Lee_fig2(T=50)
     # Lee_fig5(T=20)
     # screen_test(T1=12, T2=300)
+    # nw_sigma_test()
+    # nw_S_test()
+    # nw_kappa_test()
+    nw_Ef_test()
     pass

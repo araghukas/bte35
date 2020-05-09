@@ -5,6 +5,8 @@ from scipy.integrate import quad
 from scipy.optimize import fmin
 from scipy.special import iv, kv
 
+from fdint import fdk
+
 from materials import Material
 from _bessel_roots import alphas
 
@@ -44,6 +46,12 @@ class NWRTAsolver(object):
 
     E_max = 2. * const.e  # integration limit
 
+    # temperature gradient (arbitrary, cancelled out)
+    dTdx = 1e3  # [K/m]
+
+    # field strength (arbitrary, cancelled out)
+    eps_field = 1e4  # [V/m]
+
     def __init__(self, mat, T, R, n=None, p=None):
 
         if isinstance(mat, Material):
@@ -68,6 +76,7 @@ class NWRTAsolver(object):
 
         # optical phonon energy
         self.Epo = const.k * self.mat.Tpo
+        self.kpo = np.sqrt(2. * self.meG * self.Epo) / const.hbar
 
         # calculate optical phonon occupation number
         self.Npo = NWRTAsolver.bE(self.Epo, T)
@@ -84,7 +93,7 @@ class NWRTAsolver(object):
     @property
     def Ef(self):
         # No setter for `Ef`! Manipulate `n` or `T` instead.
-        return self._Ef
+        return float(self._Ef)
 
     @property
     def T(self):
@@ -96,7 +105,8 @@ class NWRTAsolver(object):
 
         # update temperature dependent values
         self.meG = self.mat.get_meG(newT)
-        self.k_max = np.sqrt(2. * self.meG * NWRTAsolver.E_max) / const.hbar
+        E_max = self.Ef + 100 * const.k * self.T
+        self.k_max = np.sqrt(2. * self.meG * E_max) / const.hbar
         self.Npo = NWRTAsolver.bE(self.Epo, newT)
         self._Ef = self.calculate_Ef(self.n, newT)  # adjust `Ef` for same electron concentration
 
@@ -123,6 +133,10 @@ class NWRTAsolver(object):
         self._Ef = self.calculate_Ef(new_n, self.T)
         self._p = self.calculate_p(self.Ef, self.T)
 
+        # update `k_max`
+        E_max = self.Ef + 100 * const.k * self.T
+        self.k_max = np.sqrt(2. * E_max * self.meG) / const.hbar
+
     @property
     def p(self):
         # No setter for `p`!
@@ -130,18 +144,55 @@ class NWRTAsolver(object):
 
     # TRANSPORT
     # ---------
-    def g_dist(self, k, gradT, F):
-        tau = 1. / self.r_tot(k)
-        g_k = (
-                tau / const.hbar * self.dfdk(k, self.Ef, self.T)
-                * (const.e * F + (self.E_CB(k) - self.Ef) / self.T * gradT)
+    def sigma(self):
+        Ef = self.Ef
+        T = self.T
+        c = -2. * const.e**2 / (np.pi**2 * self.R**2) / const.hbar
+        sigma_ = c * (
+            quad(lambda k: self.v_CB(k) * self.tau(k) * self.dfdk(k, Ef, T),
+                 0, self.k_max, points=[self.kpo])[0]
         )
-        return g_k
+        return sigma_
+
+    def S(self):
+        Ef = self.Ef
+        T = self.T
+        c = -1. / T / const.e
+        S_ = c * (self.EJ() - Ef)
+        return S_
+
+    def kappa_e(self):
+        Ef = self.Ef
+        T = self.T
+        S = self.S()
+        c = 2. / (np.pi * self.R)**2 / const.hbar
+        i1 = quad(lambda k: (
+                (self.E_CB(k) - self.Ef) * self.v_CB(k) * self.tau(k) * self.dfdk(k, Ef, T)),
+                  0, self.k_max, points=[self.kpo])[0]
+        i2 = quad(lambda k: (
+                (self.E_CB(k) - self.Ef)**2 * self.v_CB(k) * self.tau(k) * self.dfdk(k, Ef, T)),
+                  0, self.k_max, points=[self.kpo])[0]
+        kappa_e_ = c * (-const.e * S * i1 - 1. / T * i2)
+        return kappa_e_
+
+    def EJ(self):
+        """
+        The average energy of conduction electrons [J];
+        """
+        i1 = quad(
+            lambda k: self.E_CB(k) * self.v_CB(k) * self.tau(k) * self.dfdk(k, self.Ef, self.T),
+            0, self.k_max, points=[self.kpo])[0]
+
+        i2 = quad(
+            lambda k: self.v_CB(k) * self.tau(k) * self.dfdk(k, self.Ef, self.T),
+            0, self.k_max, points=[self.kpo])[0]
+
+        return i1 / i2
 
     # CONDUCTION BAND MODEL (PARABOLIC)
     # ---------------------------------
-    def E_conf(self, R):
-        k_ln = alphas[0] / R  # root of ordinary Bessel function
+    def E_conf(self, R, idx=0):
+        k_ln = alphas[idx] / R  # root of ordinary Bessel function
         return const.hbar**2 * k_ln**2 / 2. / self.meG
 
     def E_CB(self, k):
@@ -149,6 +200,9 @@ class NWRTAsolver(object):
 
     def k_CB(self, E):
         return np.sqrt(2. * self.meG * E) / const.hbar
+
+    def v_CB(self, k):
+        return const.hbar * k / self.meG
 
     # DISTRIBUTION FUNCTIONS
     # ----------------------
@@ -165,6 +219,11 @@ class NWRTAsolver(object):
         exp_val = np.exp((Ef - E) / const.k / T)
         return exp_val / (1. + exp_val)
 
+    @staticmethod
+    def dfdE(E, Ef, T):
+        f0 = NWRTAsolver.fE(E, Ef, T)
+        return - 1. / const.k / T * f0 * (1 - f0)
+
     def fk(self, k, Ef, T):
         E = self.E_CB(k)
         return NWRTAsolver.fE(E, Ef, T)
@@ -173,16 +232,26 @@ class NWRTAsolver(object):
         f0 = self.fk(k, Ef, T)
         return -1. / const.k / T * (const.hbar**2 * k / self.meG) * f0 * (1. - f0)
 
+    def dEfdx(self):
+        return 1. / self.T * (self.Ef - self.EJ()) / self.dTdx
+
     # CARRIER CONCENTRATIONS [m^-3]
     # -----------------------------
     def calculate_n(self, Ef, T):
-        n_linear = 2. / np.pi * quad(lambda k: self.fk(k, Ef, T), 0, 2 * self.k_max)[0]
-        return n_linear / np.pi / self.R**2
+        c = 1. / (np.pi**2 * self.R**2) * np.sqrt(2. * const.k * T * self.meG) / const.hbar
+        eta = float(Ef / const.k / T)
+        return c * fdk(-1/2, eta)
 
     def calculate_Ef(self, n, T):
-        guess = -self.mat.get_Eg(T) / 2
-        return fmin(lambda Ef: abs(np.log(self.calculate_n(Ef, T) / n)),
-                    x0=guess, maxiter=100, disp=False)
+        guess = -self.mat.get_Eg(T) / 1.5
+        Ef_ = fmin(lambda Ef: abs(np.log(n / self.calculate_n(Ef, T))),
+                   x0=guess, maxiter=100, disp=False)
+        check_n = self.calculate_n(Ef_, T)
+        err = abs(n - check_n) / n
+        if err >= 0.01:
+            print("large Ef finding error (n = {:.2e}/cm^-3): {:.2f} %"
+                  .format(n / 1e6, err * 1e2))
+        return Ef_
 
     def g_VB(self, E, T):
         E0_h = const.hbar**2 * (alphas[0] / self.R)**2 / 2. / self.mat.mh_DOS
@@ -190,6 +259,11 @@ class NWRTAsolver(object):
         if -Eg - E < 0:
             return 0
         return 1. / np.pi * 2 / self.R**2 / const.hbar * np.sqrt(2. * self.mat.mh_DOS / (-Eg - E))
+
+    def g_CB(self, E):
+        if E < 0:
+            return 0
+        return 1. / np.pi * 2 / self.R**2 / const.hbar * np.sqrt(2. * self.meG / E)
 
     def calculate_p(self, Ef, T):
         E0_h = const.hbar**2 * (alphas[0] / self.R)**2 / 2. / self.mat.mh_DOS
@@ -287,6 +361,9 @@ class NWRTAsolver(object):
 
     def r_tot(self, k):
         return self.r_ac(k) + self.r_pe(k) + self.r_po(k) + self.r_ii(k)
+
+    def tau(self, k):
+        return 1. / self.r_tot(k)
 
     # DIELECTRIC RESPONSE / SCREENING
     # -------------------------------

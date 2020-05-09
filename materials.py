@@ -25,6 +25,8 @@ class Material(object):
         # ------------------------------
         self.mh_DOS = None  # [kg] DOS effective mass of holes
 
+        self.kappa_bulk = None  # [W/m/K] bulk thermal conductivity
+
         # parameters from TABLE 1. in Rode #3
         # -----------------------------------
         self.me0 = None  # [kg] Gamma valley effective mass
@@ -153,6 +155,7 @@ InSb = Material.create(
     name='InSb',
 
     mh_DOS=0.43 * const.m_e,  # http://www.ioffe.ru/SVA/NSM/Semicond/InSb/bandstr.html
+    kappa_bulk=18,
 
     me0=0.0155 * const.m_e,
     Eg0=0.265 * const.e,
@@ -177,6 +180,7 @@ InAs = Material.create(
     name='InAs',
 
     mh_DOS=0.41 * const.m_e,  # http://www.ioffe.ru/SVA/NSM/Semicond/InAs/bandstr.html
+    kappa_bulk=27,
 
     me0=0.025 * const.m_e,
     Eg0=0.46 * const.e,
@@ -201,6 +205,7 @@ InP = Material.create(
     name='InP',
 
     mh_DOS=0.6 * const.m_e,  # http://www.ioffe.ru/SVA/NSM/Semicond/InP/bandstr.html
+    kappa_bulk=68,
 
     me0=0.072 * const.m_e,
     Eg0=1.42 * const.e,
@@ -226,6 +231,7 @@ GaAs = Material.create(
     name='GaAs',
 
     mh_DOS=0.53 * const.m_e,  # http://www.ioffe.ru/SVA/NSM/Semicond/GaAs/bandstr.html
+    kappa_bulk=55,
 
     me0=0.0655 * const.m_e,
     Eg0=1.58 * const.e,

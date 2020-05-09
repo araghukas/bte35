@@ -82,7 +82,7 @@ class RodeSolver(object):
         # maximum `k` value (set by `get_k_MAX` method)
         self.k_MAX = None  # [1/m] maximum wave number, effectively infinity
 
-        # average energy (set by `Ebar` method)
+        # average energy (set by `E_J` method)
         self._EJ = None
 
         # dopant compensation ratio
