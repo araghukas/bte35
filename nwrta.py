@@ -44,15 +44,13 @@ class NWRTAsolver(object):
         Everything in S.I. units!
     """
 
-    E_max = 2. * const.e  # integration limit
-
     # temperature gradient (arbitrary, cancelled out)
     dTdx = 1e3  # [K/m]
 
     # field strength (arbitrary, cancelled out)
     eps_field = 1e4  # [V/m]
 
-    def __init__(self, mat, T, R, n=None, p=None):
+    def __init__(self, mat, T, R, n=None, p=None, n_subs=20):
 
         if isinstance(mat, Material):
             self.mat = mat
@@ -66,13 +64,17 @@ class NWRTAsolver(object):
         self.meG = self.mat.get_meG(T)
 
         # calculate maximum wave vector (integration limit)
-        self.k_max = np.sqrt(2. * self.meG * NWRTAsolver.E_max) / const.hbar
+        self.k_max = np.sqrt(2. * self.meG * 2. * const.e) / const.hbar
 
         # set nanowire radius [m]
         self._R = R
 
+        # number of sub-bands
+        self.n_subs = n_subs
+
         # calculate confinement energy [J]
-        self.E_ln = self.E_conf(R)
+        self.E_lns_CB = self.E_conf(self.meG, idxs=[i for i in range(n_subs)])
+        self.E_lns_VB = self.E_conf(self.mat.mh_DOS, idxs=[i for i in range(n_subs)])
 
         # optical phonon energy
         self.Epo = const.k * self.mat.Tpo
@@ -84,8 +86,7 @@ class NWRTAsolver(object):
         # set electron concentration [m^-3]
         self._p = 0. if p is None else p
         if n is not None:
-            self._n = n  # [1/m^3] electron concentrations
-            self._Ef = self.calculate_Ef(n, T)
+            self.n = n  # [1/m^3] electron concentrations
         else:
             self._n = None
             self._Ef = None
@@ -105,21 +106,17 @@ class NWRTAsolver(object):
 
         # update temperature dependent values
         self.meG = self.mat.get_meG(newT)
-        E_max = self.Ef + 100 * const.k * self.T
+        E_max = self.Ef + 200 * const.k * self.T
         self.k_max = np.sqrt(2. * self.meG * E_max) / const.hbar
         self.Npo = NWRTAsolver.bE(self.Epo, newT)
         self._Ef = self.calculate_Ef(self.n, newT)  # adjust `Ef` for same electron concentration
+        self.E_lns_CB = self.E_conf(self.meG, idxs=[i for i in range(self.n_subs)])
+        self.E_lns_VB = self.E_conf(self.mat.mh_DOS, idxs=[i for i in range(self.n_subs)])
 
     @property
     def R(self):
+        # No setter for `R`! Create another solver.
         return self._R
-
-    @R.setter
-    def R(self, newR):
-        self._R = newR
-
-        # update radius dependent values
-        self.E_ln = self.E_conf(newR)
 
     @property
     def n(self):
@@ -134,7 +131,7 @@ class NWRTAsolver(object):
         self._p = self.calculate_p(self.Ef, self.T)
 
         # update `k_max`
-        E_max = self.Ef + 100 * const.k * self.T
+        E_max = self.Ef + 10. * const.k * self.T
         self.k_max = np.sqrt(2. * E_max * self.meG) / const.hbar
 
     @property
@@ -145,60 +142,88 @@ class NWRTAsolver(object):
     # TRANSPORT
     # ---------
     def sigma(self):
+        sigma_ = 0.
+        for j in range(self.n_subs):
+            sigma_ += self.sigma_j(j)
+        return sigma_
+
+    def S(self):
+        sum_ = 0.
+        for j in range(self.n_subs):
+            sum_ += self.sigma_j(j) * self.S_j(j)
+        sigma_ = self.sigma()
+        S_ = sum_ / sigma_
+        return S_
+
+    def kappa_e(self):
+        kappa_e_ = 0.
+        for j in range(self.n_subs):
+            kappa_e_ += self.kappa_e_j(j)
+        return kappa_e_
+
+    # TRANSPORT (EACH BAND)
+    # ---------------------
+    def sigma_j(self, j):
         Ef = self.Ef
         T = self.T
         c = -2. * const.e**2 / (np.pi**2 * self.R**2) / const.hbar
         sigma_ = c * (
-            quad(lambda k: self.v_CB(k) * self.tau(k) * self.dfdk(k, Ef, T),
+            quad(lambda k: self.v_CB(k) * self.tau(j, k) * self.dfdk(j, k, Ef, T),
                  0, self.k_max, points=[self.kpo])[0]
         )
         return sigma_
 
-    def S(self):
+    def S_j(self, j):
         Ef = self.Ef
         T = self.T
         c = -1. / T / const.e
-        S_ = c * (self.EJ() - Ef)
+        S_ = c * (self.EJ(j) - Ef)
         return S_
 
-    def kappa_e(self):
+    def kappa_e_j(self, j):
         Ef = self.Ef
         T = self.T
-        S = self.S()
+        S_j = self.S_j(j)
         c = 2. / (np.pi * self.R)**2 / const.hbar
         i1 = quad(lambda k: (
-                (self.E_CB(k) - self.Ef) * self.v_CB(k) * self.tau(k) * self.dfdk(k, Ef, T)),
+                (self.E_CB(j, k) - self.Ef) * self.v_CB(k) * self.tau(j, k) * self.dfdk(j, k, Ef, T)),
                   0, self.k_max, points=[self.kpo])[0]
         i2 = quad(lambda k: (
-                (self.E_CB(k) - self.Ef)**2 * self.v_CB(k) * self.tau(k) * self.dfdk(k, Ef, T)),
+                (self.E_CB(j, k) - self.Ef)**2 * self.v_CB(k) * self.tau(j, k) * self.dfdk(j, k, Ef, T)),
                   0, self.k_max, points=[self.kpo])[0]
-        kappa_e_ = c * (-const.e * S * i1 - 1. / T * i2)
+        kappa_e_ = c * (-const.e * S_j * i1 - 1. / T * i2)
         return kappa_e_
 
-    def EJ(self):
+    def EJ(self, j):
         """
         The average energy of conduction electrons [J];
         """
+        k_low, k_peak, k_hi = self.get_klims(j)
+
         i1 = quad(
-            lambda k: self.E_CB(k) * self.v_CB(k) * self.tau(k) * self.dfdk(k, self.Ef, self.T),
-            0, self.k_max, points=[self.kpo])[0]
+            lambda k: self.E_CB(j, k) * self.v_CB(k) * self.tau(j, k) * self.dfdk(j, k, self.Ef, self.T),
+            k_low, k_hi, points=[self.kpo, k_peak])[0]
 
         i2 = quad(
-            lambda k: self.v_CB(k) * self.tau(k) * self.dfdk(k, self.Ef, self.T),
-            0, self.k_max, points=[self.kpo])[0]
+            lambda k: self.v_CB(k) * self.tau(j, k) * self.dfdk(j, k, self.Ef, self.T),
+            k_low, k_hi, points=[self.kpo, k_peak])[0]
 
-        return i1 / i2
+        EJ_ = i1 / i2
+        return EJ_
 
     # CONDUCTION BAND MODEL (PARABOLIC)
     # ---------------------------------
-    def E_conf(self, R, idx=0):
-        k_ln = alphas[idx] / R  # root of ordinary Bessel function
-        return const.hbar**2 * k_ln**2 / 2. / self.meG
+    def E_conf(self, m, idxs):
+        E_lns = []
+        for idx in idxs:
+            k_ln = alphas[idx] / self.R  # root of ordinary Bessel function
+            E_lns.append(const.hbar**2 * k_ln**2 / 2. / m)
+        return E_lns
 
-    def E_CB(self, k):
-        return const.hbar**2 * k**2 / 2. / self.meG
+    def E_CB(self, j, k):
+        return self.E_lns_CB[j] + const.hbar**2 * k**2 / 2. / self.meG
 
-    def k_CB(self, E):
+    def kx_CB(self, E):
         return np.sqrt(2. * self.meG * E) / const.hbar
 
     def v_CB(self, k):
@@ -224,54 +249,48 @@ class NWRTAsolver(object):
         f0 = NWRTAsolver.fE(E, Ef, T)
         return - 1. / const.k / T * f0 * (1 - f0)
 
-    def fk(self, k, Ef, T):
-        E = self.E_CB(k)
+    def fk(self, j, k, Ef, T):
+        E = self.E_CB(j, k)
         return NWRTAsolver.fE(E, Ef, T)
 
-    def dfdk(self, k, Ef, T):
-        f0 = self.fk(k, Ef, T)
+    def dfdk(self, j, k, Ef, T):
+        f0 = self.fk(j, k, Ef, T)
         return -1. / const.k / T * (const.hbar**2 * k / self.meG) * f0 * (1. - f0)
 
-    def dEfdx(self):
-        return 1. / self.T * (self.Ef - self.EJ()) / self.dTdx
+    def dEfdx(self, j):
+        return 1. / self.T * (self.Ef - self.EJ(j)) / self.dTdx
 
     # CARRIER CONCENTRATIONS [m^-3]
     # -----------------------------
-    def calculate_n(self, Ef, T):
-        c = 1. / (np.pi**2 * self.R**2) * np.sqrt(2. * const.k * T * self.meG) / const.hbar
-        eta = float(Ef / const.k / T)
-        return c * fdk(-1/2, eta)
+    def calculate_n(self, Ef):
+        c = 1. / (np.pi**2 * self.R**2) * np.sqrt(2. * const.k * self.T * self.meG) / const.hbar
+        n_ = 0.
+        for E_ln in self.E_lns_CB:
+            eta = (float(Ef) - E_ln) / const.k / self.T
+            n_ += c * fdk(-1 / 2, eta)
+
+        return n_
+
+    def calculate_p(self, Ef, T):
+        c = 1. / (np.pi**2 * self.R**2) * np.sqrt(2. * const.k * T * self.mat.mh_DOS) / const.hbar
+        p_ = 0.
+        Eg = self.mat.get_Eg(T)
+        for E_ln in self.E_lns_VB:
+            eta = -(float(Ef) - E_ln - Eg) / const.k / T
+            p_ += c * fdk(-1 / 2, eta)
+
+        return p_
 
     def calculate_Ef(self, n, T):
-        guess = -self.mat.get_Eg(T) / 1.5
-        Ef_ = fmin(lambda Ef: abs(np.log(n / self.calculate_n(Ef, T))),
-                   x0=guess, maxiter=100, disp=False)
-        check_n = self.calculate_n(Ef_, T)
+        guess = -self.mat.get_Eg(T) / 3.
+        Ef_ = fmin(lambda Ef: abs(np.log(n / self.calculate_n(Ef))),
+                   x0=guess, maxiter=500, ftol=1e-8, disp=False)
+        check_n = self.calculate_n(Ef_)
         err = abs(n - check_n) / n
         if err >= 0.01:
             print("large Ef finding error (n = {:.2e}/cm^-3): {:.2f} %"
                   .format(n / 1e6, err * 1e2))
         return Ef_
-
-    def g_VB(self, E, T):
-        E0_h = const.hbar**2 * (alphas[0] / self.R)**2 / 2. / self.mat.mh_DOS
-        Eg = self.mat.get_Eg(T) + self.E_ln + E0_h
-        if -Eg - E < 0:
-            return 0
-        return 1. / np.pi * 2 / self.R**2 / const.hbar * np.sqrt(2. * self.mat.mh_DOS / (-Eg - E))
-
-    def g_CB(self, E):
-        if E < 0:
-            return 0
-        return 1. / np.pi * 2 / self.R**2 / const.hbar * np.sqrt(2. * self.meG / E)
-
-    def calculate_p(self, Ef, T):
-        E0_h = const.hbar**2 * (alphas[0] / self.R)**2 / 2. / self.mat.mh_DOS
-        Eg = self.mat.get_Eg(T) + self.E_ln + E0_h
-
-        # N.B. f(-E, -Ef, T) == [1 - f(E, Ef, T)]
-        return quad(lambda E: self.fE(-E, -Ef, T) * self.g_VB(E, T),
-                    -Eg - 2. * const.e, -Eg)[0]
 
     # SCATTERING RATES
     # ----------------
@@ -317,7 +336,7 @@ class NWRTAsolver(object):
         )
         return rate / (4. * np.pi)**2
 
-    def r_ii(self, k, Z=1, screen=False):
+    def r_ii(self, j, k, Z=1, screen=False):
         """
         Ionized impurity scattering rate (background) at finite temperature;
         Lee, Eq (23)
@@ -327,7 +346,7 @@ class NWRTAsolver(object):
         N = (self.n + self.p)
 
         if screen:
-            eps = self.eps1D(Q / self.R)
+            eps = self.eps1D(j, Q / self.R)
         else:
             eps = self.mat.eps_lo
 
@@ -359,11 +378,11 @@ class NWRTAsolver(object):
                    ) / (4. * np.pi)**2
         return rate_ii0
 
-    def r_tot(self, k):
-        return self.r_ac(k) + self.r_pe(k) + self.r_po(k) + self.r_ii(k)
+    def r_tot(self, j, k):
+        return self.r_ac(k) + self.r_pe(k) + self.r_po(k) + self.r_ii(j, k)
 
-    def tau(self, k):
-        return 1. / self.r_tot(k)
+    def tau(self, j, k):
+        return 1. / self.r_tot(j, k)
 
     # DIELECTRIC RESPONSE / SCREENING
     # -------------------------------
@@ -387,7 +406,7 @@ class NWRTAsolver(object):
     #             -self.k_max, self.k_max)[0]
     #     return output * 1 / np.pi
 
-    def Fq(self, q, Ef, T):
+    def Fq(self, j, q, Ef, T):
         """
         Static Lindhard function at finite temperature;
         Lee, Eq. (12)
@@ -402,20 +421,20 @@ class NWRTAsolver(object):
         output = np.zeros(q.shape)
         ks = np.linspace(-self.k_max, self.k_max, 1000)
         for i, q_ in enumerate(q):
-            f_k = self.fk(ks, Ef, T)
-            f_kq = self.fk(ks + q_, Ef, T)
-            E_k = self.E_CB(ks)
-            E_kq = self.E_CB(ks + q_)
+            f_k = self.fk(j, ks, Ef, T)
+            f_kq = self.fk(j, ks + q_, Ef, T)
+            E_k = self.E_CB(j, ks)
+            E_kq = self.E_CB(j, ks + q_)
             output[i] = np.trapz((f_kq - f_k) / (E_kq - E_k), x=ks)
         return output * 1 / np.pi
 
-    def eps1D(self, q):
+    def eps1D(self, j, q):
         """
         Dimensionless dielectric function of quantum wire [1];
         (finite temperature)
         Lee, Eq. (13)
         """
-        Fq_ = self.Fq(q, self.Ef, self.T)
+        Fq_ = self.Fq(j, q, self.Ef, self.T)
         return (
                 self.mat.eps_lo
                 +
@@ -458,3 +477,25 @@ class NWRTAsolver(object):
                 2. * self.meG / (np.pi * const.hbar**2 * q)
                 * np.log(np.abs((2 * kf - q) / (2 * kf + q)))
         )
+
+    # UTILITIES
+    # ---------
+    def get_klims(self, j, delta=15.):
+        Ef = self.Ef
+        T = self.T
+        m = self.meG
+
+        ks = np.linspace(1., self.k_max, 1000)
+        i1_vals = self.E_CB(j, ks) * self.v_CB(ks) * self.tau(j, ks) * self.dfdk(j, ks, Ef, T)
+        min_i1 = np.min(i1_vals)
+        min_idx = int(np.where(i1_vals == min_i1)[0])
+        k_peak = ks[min_idx]
+
+        E_peak = const.hbar**2 * k_peak**2 / 2. / m
+        E_low = E_peak - delta * const.k * T
+        E_hi = E_peak + delta * const.k * T
+
+        k_low = np.sqrt(2. * m * E_low) / const.hbar if E_low > 0. else 0.
+        k_hi = np.sqrt(2. * m * E_hi) / const.hbar
+
+        return k_low, k_peak, k_hi

@@ -750,16 +750,59 @@ def nw_kappa_test():
 
 
 def nw_Ef_test():
-    Efs = np.linspace(-2, 20, 1000) * const.e
-    nws = NWRTAsolver(GaAs, R=1e-9, T=300)
-    n_target = 5e18 * 1e6
+    Efs = np.linspace(-2, 2, 1000) * const.e
+    nws = NWRTAsolver(InAs, R=15e-9, T=300, n_subs=5)
+    n_target = 3.73e16 * 1e6
 
     ns = np.zeros(Efs.shape)
     for i, Ef in enumerate(Efs):
-        ns[i] = nws.calculate_n(Ef, 300)
+        ns[i] = nws.calculate_n(Ef)
 
-    plt.plot(Efs / const.e, ns / 1e6)
+    plt.plot(Efs / const.e, abs(np.log(ns / n_target)))
     plt.yscale('log')
+    plt.show()
+
+
+def EJ_integrand_test(mat, j, n, R=10e-9, T=300):
+    nws = NWRTAsolver(mat, T=T, R=R, n=n)
+    print("n = {:.5e}".format(nws.n / 1e6))
+    print("Ef = {} eV".format(nws.Ef / const.e))
+    i_lo = 0
+    i_hi = 0
+    for i in range(nws.n_subs):
+        if nws.Ef > nws.E_lns_CB[i]:
+            i_lo = i
+        else:
+            i_hi = i
+            break
+    print("E_ln[{}] < Ef < E_ln[{}]"
+          .format(i_lo, i_hi))
+
+    ks = np.linspace(1, nws.k_max, 1000)
+
+    def i1(j_, k):
+        return nws.E_CB(j_, k) * nws.v_CB(k) * nws.tau(j_, k) * nws.dfdk(j_, k, nws.Ef, nws.T)
+
+    def i2(j_, k):
+        return nws.v_CB(k) * nws.tau(j_, k) * nws.dfdk(j_, k, nws.Ef, nws.T)
+
+    fig = plt.figure()
+    ax1 = fig.add_subplot(121)
+    ax2 = fig.add_subplot(122)
+
+    i1vals = i1(j, ks)
+    ax1.plot(ks / nws.kpo, i1vals, label=str(j))
+
+    i2vals = i2(j, ks)
+    ax2.plot(ks / nws.kpo, i2vals, label=str(j))
+
+    k_low, k_peak, k_hi = nws.get_klims(j)
+
+    ax2.axvline(x=k_hi / nws.kpo, linestyle=':', color='r')
+    ax2.axvline(x=k_peak / nws.kpo, linestyle=':', color='k')
+    ax2.axvline(x=k_low / nws.kpo, linestyle=':', color='b')
+
+    ax1.legend()
     plt.show()
 
 
@@ -785,5 +828,6 @@ if __name__ == "__main__":
     # nw_sigma_test()
     # nw_S_test()
     # nw_kappa_test()
-    nw_Ef_test()
+    # nw_Ef_test()
+    EJ_integrand_test(GaAs, j=15, n=1e19 * 1e6)
     pass

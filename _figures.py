@@ -80,7 +80,7 @@ def nanowire_scattering_rates(show=True, save=False,
         plt.show()
 
 
-def nwrta_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=15e-9, n=1e17 * 1e6):
+def nwrta_tau_and_gk(show=True, save=False, mat=GaAs, T=300, R=10e-9, n=1e17 * 1e6):
     nwsolver = NWRTAsolver(mat, T, R, n=n)
     Ef = nwsolver.Ef
     m = nwsolver.meG
@@ -204,10 +204,13 @@ def bulk_tau_and_gk(i, show=True, save=False, mat=GaAs, T=300, n=1e17 * 1e6):
 
 
 def nwrta_transport_n(R, num_n, show=True, save=False, T=300):
-    ns = np.logspace(16, 18, num_n)
-    ns *= 1e6
     mats = [GaAs, InAs, InSb, InP]
-    solvers = {mat: NWRTAsolver(mat, T, R) for mat in mats}
+
+    nmax_mat = {GaAs: 19.2, InAs: 18.55, InSb: 17.9, InP: 19.4}
+    # ns_mat = {mat: np.logspace(16, nmax_mat[mat], num_n) * 1e6 for mat in mats}
+    ns_mat = {mat: np.linspace(1e16, 10**nmax_mat[mat], num_n) * 1e6 for mat in mats}
+    nsubs_mat = {GaAs: 20, InAs: 20, InSb: 20, InP: 20}
+    solvers = {mat: NWRTAsolver(mat, T, R, n_subs=nsubs_mat[mat]) for mat in mats}
     sigmas = {}
     Ss = {}
     kappas = {}
@@ -216,7 +219,7 @@ def nwrta_transport_n(R, num_n, show=True, save=False, T=300):
     for mat in mats:
         print("working on {}".format(mat.name))
         nws = solvers[mat]
-
+        ns = ns_mat[mat]
         S_vals = np.zeros(ns.shape)
         sigma_vals = np.zeros(ns.shape)
         kappa_vals = np.zeros(ns.shape)
@@ -227,9 +230,15 @@ def nwrta_transport_n(R, num_n, show=True, save=False, T=300):
             sigma = nws.sigma()
             kappa_e = nws.kappa_e()
 
-            S_vals[i] = S
-            sigma_vals[i] = sigma
-            kappa_vals[i] = kappa_e
+            if abs(S) > 1e-3:
+                print("S = {:.4e} @ n = {:.4e}".format(S, n))
+                S_vals[i] = np.nan
+                sigma_vals[i] = sigma
+                kappa_vals[i] = np.nan
+            else:
+                S_vals[i] = S
+                sigma_vals[i] = sigma
+                kappa_vals[i] = kappa_e
 
         Ss[mat] = S_vals
         sigmas[mat] = sigma_vals
@@ -237,7 +246,6 @@ def nwrta_transport_n(R, num_n, show=True, save=False, T=300):
         ZTs[mat] = S_vals**2 * sigma_vals * T / (kappa_vals + mat.kappa_bulk)
 
     colors = {GaAs: 'r', InAs: 'g', InSb: 'b', InP: u'#daa520'}
-    ns_x = ns / 1e6
 
     fig = plt.figure(figsize=(8, 7))
     plt.subplots_adjust(bottom=.2, wspace=.3, hspace=.3)
@@ -245,28 +253,28 @@ def nwrta_transport_n(R, num_n, show=True, save=False, T=300):
     # Seebeck plot
     ax1 = fig.add_subplot(221)
     for mat in mats:
-        ax1.plot(ns_x, -Ss[mat] * 1e6, color=colors[mat], label=mat.name)
+        ax1.plot(ns_mat[mat] / 1e6, -Ss[mat] * 1e6, color=colors[mat], label=mat.name)
     ax1.legend()
     ax1.set_xscale('log')
 
     # sigma plot
     ax2 = fig.add_subplot(222)
     for mat in mats:
-        ax2.plot(ns_x, sigmas[mat] / 1e2, color=colors[mat])
+        ax2.plot(ns_mat[mat] / 1e6, sigmas[mat] / 1e2, color=colors[mat])
     ax2.set_xscale('log')
     ax2.set_yscale('log')
 
     # kappa plot
     ax3 = fig.add_subplot(223)
     for mat in mats:
-        ax3.plot(ns_x, kappas[mat], color=colors[mat])
+        ax3.plot(ns_mat[mat] / 1e6, kappas[mat], color=colors[mat])
     ax3.set_xscale('log')
     ax3.set_yscale('log')
 
     # ZT plot
     ax4 = fig.add_subplot(224)
     for mat in mats:
-        ax4.plot(ns_x, ZTs[mat], color=colors[mat])
+        ax4.plot(ns_mat[mat] / 1e6, ZTs[mat], color=colors[mat])
     ax4.set_xscale('log')
 
     if save:
@@ -279,5 +287,5 @@ if __name__ == '__main__':
     # nanowire_scattering_rates(show=True, save=True)
     # nwrta_tau_and_gk(show=True, save=False)
     # bulk_tau_and_gk(i=30, show=True, save=False)
-    nwrta_transport_n(R=10e-9, num_n=50, save=False, show=True)
+    nwrta_transport_n(R=15e-9, num_n=30, save=False, show=True)
     pass
