@@ -285,7 +285,7 @@ class RodeSolver(object):
         g = self.g_dist(i, xi)
         J_Q_oc = self.J_Q(g)
 
-        return J_Q_oc / self.dTdx
+        return -J_Q_oc / self.dTdx
 
     # AVERAGES
     # --------

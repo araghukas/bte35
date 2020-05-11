@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.constants as const
+import warnings
 
 from scipy.integrate import quad
 from scipy.optimize import fmin
@@ -50,7 +51,7 @@ class NWRTAsolver(object):
     # field strength (arbitrary, cancelled out)
     eps_field = 1e4  # [V/m]
 
-    def __init__(self, mat, T, R, n=None, p=None, n_subs=20):
+    def __init__(self, mat, T, R, n=None, p=None, n_subs=50):
 
         if isinstance(mat, Material):
             self.mat = mat
@@ -63,14 +64,23 @@ class NWRTAsolver(object):
         # calculate effective mass [kg]
         self.meG = self.mat.get_meG(T)
 
-        # calculate maximum wave vector (integration limit)
-        self.k_max = np.sqrt(2. * self.meG * 2. * const.e) / const.hbar
+        # thermal de Broglie wavelength [m]
+        self.lambda_DB = np.sqrt(2. * np.pi * const.hbar**2 / (self.meG * const.k * T))
+
+        # calculate maximum wave vector
+        self.k_max = np.sqrt(2. * self.meG * 4. * const.e) / const.hbar
 
         # set nanowire radius [m]
         self._R = R
+        if 2 * R > self.lambda_DB:
+            warnings.warn("nanowire diameter exceeds thermal de Broglie wavelength ({:.2f} nm)"
+                          .format(self.lambda_DB * 1e9))
 
         # number of sub-bands
-        self.n_subs = n_subs
+        self.n_subs = 50
+
+        # number of occupied sub-bands
+        self.n_occ = 0  # assume all until `n` is set
 
         # calculate confinement energy [J]
         self.E_lns_CB = self.E_conf(self.meG, idxs=[i for i in range(n_subs)])
@@ -82,6 +92,14 @@ class NWRTAsolver(object):
 
         # calculate optical phonon occupation number
         self.Npo = NWRTAsolver.bE(self.Epo, T)
+
+        # electron concentration in each sub-band
+        self.n_js = np.zeros(n_subs)
+
+        # transport coefficient memos
+        self.S_js = {}
+        self.sigma_js = {}
+        self.kappa_e_js = {}
 
         # set electron concentration [m^-3]
         self._p = 0. if p is None else p
@@ -106,12 +124,18 @@ class NWRTAsolver(object):
 
         # update temperature dependent values
         self.meG = self.mat.get_meG(newT)
+        self.lambda_DB = np.sqrt(2. * np.pi * const.hbar**2 / (self.meG * const.k * newT))
         E_max = self.Ef + 200 * const.k * self.T
         self.k_max = np.sqrt(2. * self.meG * E_max) / const.hbar
         self.Npo = NWRTAsolver.bE(self.Epo, newT)
         self._Ef = self.calculate_Ef(self.n, newT)  # adjust `Ef` for same electron concentration
         self.E_lns_CB = self.E_conf(self.meG, idxs=[i for i in range(self.n_subs)])
         self.E_lns_VB = self.E_conf(self.mat.mh_DOS, idxs=[i for i in range(self.n_subs)])
+
+        # reset memos
+        self.S_js = {}
+        self.sigma_js = {}
+        self.kappa_e_js = {}
 
     @property
     def R(self):
@@ -130,9 +154,17 @@ class NWRTAsolver(object):
         self._Ef = self.calculate_Ef(new_n, self.T)
         self._p = self.calculate_p(self.Ef, self.T)
 
+        # determine number of sub-bands carrying 1%+ of total electrons
+        self.n_occ = sum(self.n_js / self.n >= 0.001)
+
         # update `k_max`
         E_max = self.Ef + 10. * const.k * self.T
         self.k_max = np.sqrt(2. * E_max * self.meG) / const.hbar
+
+        # reset memos
+        self.S_js = {}
+        self.sigma_js = {}
+        self.kappa_e_js = {}
 
     @property
     def p(self):
@@ -143,13 +175,13 @@ class NWRTAsolver(object):
     # ---------
     def sigma(self):
         sigma_ = 0.
-        for j in range(self.n_subs):
+        for j in range(self.n_occ):
             sigma_ += self.sigma_j(j)
         return sigma_
 
     def S(self):
         sum_ = 0.
-        for j in range(self.n_subs):
+        for j in range(self.n_occ):
             sum_ += self.sigma_j(j) * self.S_j(j)
         sigma_ = self.sigma()
         S_ = sum_ / sigma_
@@ -157,41 +189,56 @@ class NWRTAsolver(object):
 
     def kappa_e(self):
         kappa_e_ = 0.
-        for j in range(self.n_subs):
+        for j in range(self.n_occ):
             kappa_e_ += self.kappa_e_j(j)
         return kappa_e_
 
     # TRANSPORT (EACH BAND)
     # ---------------------
     def sigma_j(self, j):
+        if j in self.sigma_js:
+            return self.sigma_js[j]
+
         Ef = self.Ef
         T = self.T
         c = -2. * const.e**2 / (np.pi**2 * self.R**2) / const.hbar
+        k_low, k_peak, k_hi = self.get_klims(j)
         sigma_ = c * (
             quad(lambda k: self.v_CB(k) * self.tau(j, k) * self.dfdk(j, k, Ef, T),
-                 0, self.k_max, points=[self.kpo])[0]
+                 k_low, k_hi, points=[self.kpo, k_peak])[0]
         )
+        self.sigma_js[j] = sigma_
         return sigma_
 
     def S_j(self, j):
+        if j in self.S_js:
+            return self.S_js[j]
+
         Ef = self.Ef
         T = self.T
         c = -1. / T / const.e
         S_ = c * (self.EJ(j) - Ef)
+        self.S_js[j] = S_
         return S_
 
     def kappa_e_j(self, j):
+        if j in self.kappa_e_js:
+            return self.kappa_e_js[j]
+
         Ef = self.Ef
         T = self.T
         S_j = self.S_j(j)
         c = 2. / (np.pi * self.R)**2 / const.hbar
+
+        k_low, k_peak, k_hi = self.get_klims(j)
         i1 = quad(lambda k: (
                 (self.E_CB(j, k) - self.Ef) * self.v_CB(k) * self.tau(j, k) * self.dfdk(j, k, Ef, T)),
-                  0, self.k_max, points=[self.kpo])[0]
+                  k_low, k_hi, points=[self.kpo, k_peak])[0]
         i2 = quad(lambda k: (
                 (self.E_CB(j, k) - self.Ef)**2 * self.v_CB(k) * self.tau(j, k) * self.dfdk(j, k, Ef, T)),
-                  0, self.k_max, points=[self.kpo])[0]
+                  k_low, k_hi, points=[self.kpo, k_peak])[0]
         kappa_e_ = c * (-const.e * S_j * i1 - 1. / T * i2)
+        self.kappa_e_js[j] = kappa_e_
         return kappa_e_
 
     def EJ(self, j):
@@ -263,13 +310,18 @@ class NWRTAsolver(object):
     # CARRIER CONCENTRATIONS [m^-3]
     # -----------------------------
     def calculate_n(self, Ef):
-        c = 1. / (np.pi**2 * self.R**2) * np.sqrt(2. * const.k * self.T * self.meG) / const.hbar
         n_ = 0.
-        for E_ln in self.E_lns_CB:
-            eta = (float(Ef) - E_ln) / const.k / self.T
-            n_ += c * fdk(-1 / 2, eta)
+        for j in range(self.n_subs):
+            n_ += self.calculate_n_j(j, Ef)
 
         return n_
+
+    def calculate_n_j(self, j, Ef):
+        c = 1. / (np.pi**2 * self.R**2) * np.sqrt(2. * const.k * self.T * self.meG) / const.hbar
+        eta = (float(Ef) - self.E_lns_CB[j]) / const.k / self.T
+        n_j = c * fdk(-1 / 2, eta)
+        self.n_js[j] = n_j
+        return n_j
 
     def calculate_p(self, Ef, T):
         c = 1. / (np.pi**2 * self.R**2) * np.sqrt(2. * const.k * T * self.mat.mh_DOS) / const.hbar
@@ -343,7 +395,7 @@ class NWRTAsolver(object):
         """
         k = np.abs(k)
         Q = 2. * k * self.R
-        N = (self.n + self.p)
+        N = self.calculate_n_j(j, self.Ef)
 
         if screen:
             eps = self.eps1D(j, Q / self.R)
@@ -485,10 +537,25 @@ class NWRTAsolver(object):
         T = self.T
         m = self.meG
 
-        ks = np.linspace(1., self.k_max, 1000)
+        ks = np.linspace(1., self.k_max, 2000)
         i1_vals = self.E_CB(j, ks) * self.v_CB(ks) * self.tau(j, ks) * self.dfdk(j, ks, Ef, T)
+        # clean NaN's
+        clean_indices = ~np.isnan(i1_vals)
+        i1_vals = i1_vals[clean_indices]
+        ks = ks[clean_indices]
+
         min_i1 = np.min(i1_vals)
-        min_idx = int(np.where(i1_vals == min_i1)[0])
+        min_where = np.where(i1_vals == min_i1)[0]
+        if len(min_where) > 1:
+            min_idx = int(max(min_where))
+        elif len(min_where) == 0:
+            print('i1_values')
+            print()
+            print(i1_vals)
+            raise ValueError
+        else:
+            min_idx = int(min_where)
+
         k_peak = ks[min_idx]
 
         E_peak = const.hbar**2 * k_peak**2 / 2. / m
