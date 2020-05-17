@@ -1,4 +1,11 @@
 __pycache__/
 .DS_STORE
 .idea/
-*.pdf
+
+dispersions/
+doping_optimizations/
+figures/
+
+_figures.py
+_sort_bessel.py
+_tests.py
