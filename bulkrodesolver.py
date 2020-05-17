@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.constants as const
 
-from scipy.special import expit  # 'expit(x) = 1/(1+exp(-x))'; no warnings, unlike `np.exp`
+from scipy.special import expit  # 'expit(x) = 1/(1+exp(-x))'
 from scipy.optimize import fmin
 from scipy.interpolate import interp1d
 from scipy.integrate import quad
@@ -23,21 +23,20 @@ The main references are:
 See also:
 
     Rode, D. L. "Low-field transport in semiconductors."
-    Semiconductors and Semimetals 10 (1975): 1-90.
+    Semiconductors and Semimetals 10 (1975): 1.
+    
+    Fishman, G. "Phonon-limited mobility in a quasi-one dimensional semiconductor"
+    Physical Review B 36 (1987): 7448.
 
     Kane, Evan O. "Band structure of indium antimonide."
-    Journal of Physics and Chemistry of Solids 1.4 (1957): 249-261.
+    Journal of Physics and Chemistry of Solids 1.4 (1957): 249.
 
     Vurgaftman, I., J. R. Meyer, and L. R. Ram-Mohan.
     "Band parameters for III–V compound semiconductors and their alloys."
-    Journal of applied physics 89.11 (2001): 5815-5875.
-
-    Broido, D. A., and T. L. Reinecke.
-    "Theory of thermoelectric power factor in quantum well and quantum wire superlattices."
-    Physical review B 64.4 (2001): 045324.
+    Journal of applied physics 89.11 (2001): 5815.
 
     Pichanusakorn, Paothep, and Prabhakar Bandaru. "Nanostructured thermoelectrics."
-    Materials Science and Engineering: R: Reports 67.2-4 (2010): 19-63.
+    Materials Science and Engineering: R: Reports 67.2-4 (2010): 19.
 
 """
 
@@ -54,7 +53,7 @@ class RodeSolver(object):
     # field strength (arbitrary, cancelled out)
     eps_field = 1e4  # [V/m]
 
-    def __init__(self, mat, T, Rc, n=None, p=None, num_k=10000, k_MIN=2e6):
+    def __init__(self, mat, T, Rc=1., n=None, p=None, num_k=10000, k_MIN=2e6):
 
         # assign material
         if isinstance(mat, Material):
@@ -72,15 +71,15 @@ class RodeSolver(object):
         # polar optical phonon occupation number
         self.Npo = RodeSolver.bE(self.Epo, self.T)
 
-        # dictionary of arrays
+        # pre-computed arrays for efficient iteration; see `compute_spaces` method
         self.SPACES = {}
 
         # some defaults
         self._p = p if p is not None else 0.  # [1/m^3] hole concentration
-        self.k_MIN = k_MIN  # [1/m] minimum (magnitude of) wave number, effectively zero
+        self.k_MIN = k_MIN  # [1/m] minimum wave number, approximates zero
 
         # maximum `k` value (set by `get_k_MAX` method)
-        self.k_MAX = None  # [1/m] maximum wave number, effectively infinity
+        self.k_MAX = None  # [1/m] maximum wave number, approximates infinity
 
         # average energy (set by `E_J` method)
         self._EJ = None
@@ -91,10 +90,11 @@ class RodeSolver(object):
         # number of points in k-space
         self.num_k = num_k
 
+        self._is_intrinsic = False
+
         if n is not None:
             self._n = n  # [1/m^3] electron concentration
             self._Ef = self.calculate_Ef(n)  # [J] Fermi energy
-
             self.compute_spaces(n, self._p, Rc, num_k)
         else:
             self._n = None
@@ -127,16 +127,21 @@ class RodeSolver(object):
 
     @n.setter
     def n(self, new_n):
-        self._n = new_n
+        if new_n == 'intrinsic':
+            self._Ef = self.calculate_Ei()
+            self._n = self.calculate_n(self._Ef)
+            self._p = self.calculate_p(self._Ef)
+            self._Rc = 0.
+            self._is_intrinsic = True
+        else:
+            self._n = new_n
 
-        # update Fermi energy--assuming no temperature change has occurred
-        self._Ef = self.calculate_Ef(new_n)
-
-        # update hole concentration
-        self._p = self.calculate_p(self._Ef)
+            # update Fermi energy--assuming no temperature change has occurred
+            self._Ef = self.calculate_Ef(new_n)
+            self._p = self.calculate_p(self._Ef)
 
         # update pre-computed arrays
-        self.compute_spaces(new_n, self.p, self.Rc, self.num_k)
+        self.compute_spaces(self._n, self._p, self._Rc, self.num_k)
 
     @property
     def p(self):
@@ -148,7 +153,8 @@ class RodeSolver(object):
         self._p = new_p
 
         # update ionized impurity scattering rate
-        self.SPACES['r_ii'] = self.r_ii(self.n, new_p, self.Rc)
+        if not self._is_intrinsic:
+            self.SPACES['r_ii'] = self.r_ii(self.n, new_p, self.Rc)
 
     @property
     def Rc(self):
@@ -164,11 +170,12 @@ class RodeSolver(object):
 
     @property
     def Ef(self):
-        # No setter for this! Manipulate `T` or `n` instead. Keeping things simple.
+        # No setter for this!
+        # Ef is "private" to keep things simple, manipulate `n` or `T` instead
         return self._Ef
 
-    # MAIN ITERATOR FUNCTIONS
-    # -----------------------
+    # MAIN ITERATOR FUNCTION
+    # ----------------------
     def g_dist(self, i, xi):
         """
         Iterative solver of the B.T.E. with assumptions in Rode #3;
@@ -243,8 +250,6 @@ class RodeSolver(object):
     def sigma(self, i=30):
         """
         Electrical conductivity (electron contribution only) [S/m];
-        Derived from Broido (2001) Eqs. (14-17) or similar;
-        equivalent to `n * e * mu`
         """
         v = self.SPACES['v']
         k = self.SPACES['k']
@@ -259,7 +264,6 @@ class RodeSolver(object):
     def S(self, i=30):
         """
         Seebeck Coefficient [V/K]
-        Rode #3, Eq. (A5)
         """
         dfdk = self.SPACES['dfdk']
         dEfdx = self.SPACES['dEfdx']
@@ -275,7 +279,7 @@ class RodeSolver(object):
 
     def kappa_e(self, i=30):
         """
-        Open-circuit electronic thermal conductivity;
+        Open-circuit electronic thermal conductivity [W/m/K];
         """
         dfdk = self.SPACES['dfdk']
         dEfdx = self.SPACES['dEfdx']
@@ -345,24 +349,23 @@ class RodeSolver(object):
         Eg = self.mat.get_Eg(self.T)
         meG = self.mat.get_meG(self.T)
 
-        a = const.hbar**2 / 2. / const.m_e
-        b = Eg / 2.
-        c = 2. * const.hbar**2 / const.m_e * (const.m_e - meG) / (meG * Eg)
+        a1 = const.hbar**2 / 2. / const.m_e
+        a2 = Eg / 2.
+        a3 = 2. * const.hbar**2 / const.m_e * (const.m_e - meG) / (meG * Eg)
 
         # solve resulting equation by substituting x**2 = 1 - c*k**2, then use quadratic formula:
-        x1 = (-b + np.sqrt(b**2 + 4. * a / c * (b + a / c + E))) / (2. * a / c)
+        x1 = (-a2 + np.sqrt(a2**2 + 4. * a1 / a3 * (a2 + a1 / a3 + E))) / (2. * a1 / a3)
 
-        return np.sqrt((x1**2 - 1.) / c)
+        return np.sqrt((x1**2 - 1.) / a3)
 
     def v_CB(self, k):
         """
-        Group velocity of electrons;
+        Group velocity of electrons [m/s];
 
         From Rode #1, Eq. (5), we have: 'dEdk = ℏ**2 * k / (m_e * d)',
         where 'd' is the output of `augmented_dos(k)`.
 
         The group velocity is defined as: 'v = dω/dk = 1/ℏ * dEdk'.
-
         Therefore, we have: 'v = ℏ * k / (m_e * d)'
         """
         return const.hbar * k / const.m_e / self.augmented_dos(k)
@@ -391,7 +394,7 @@ class RodeSolver(object):
 
     def augmented_dos(self, k):
         """
-        Augmented density of states--used to scale effective mass;
+        Augmented density of states--used to scale electron effective mass;
         Rode #1, Eq. (6)
         """
         meG = self.mat.get_meG(self.T)
@@ -404,8 +407,7 @@ class RodeSolver(object):
 
     def calculate_n(self, Ef):
         """
-        Calculates electron concentration;
-        Rode #3, Eq. (30)
+        Calculates electron concentration [1/m^3];
         """
         k_MAX = self.get_k_MAX(Ef, self.T)
         ks = np.linspace(self.k_MIN, k_MAX, self.num_k)
@@ -414,11 +416,10 @@ class RodeSolver(object):
     # a simple description of the valence band using the D.O.S. effective mass
     def calculate_p(self, Ef):
         """
-        Integrate hole distribution over energy to find concentration;
+        Integrate hole distribution over energy to find hole concentration [1/m^3];
         """
-        Eg = self.mat.get_Eg(self.T)
-
         # N.B. f(-E, -Ef, T) == [1 - f(E, Ef, T)]
+        Eg = self.mat.get_Eg(self.T)
         return quad(lambda E: self.fE(-E, -Ef, self.T) * self.g_VB(E), -Eg - 5. * const.e, -Eg)[0]
 
     def g_VB(self, E):
@@ -427,10 +428,8 @@ class RodeSolver(object):
         Pichanusakorn (2010), Eq. (16)
         """
         Eg = self.mat.get_Eg(self.T)
-
         if -Eg - E < 0:
             return 0
-
         return (1. / (2. * np.pi**2)
                 * (2. * self.mat.mh_DOS / const.hbar**2)**(3 / 2) * (-Eg - E)**(1 / 2))
 
@@ -509,7 +508,10 @@ class RodeSolver(object):
         return factor * integral
 
     def r_ac(self):
-        """ acoustic deformation potential scattering relaxation rate """
+        """
+        Acoustic deformation potential scattering relaxation rate [1/s];
+        Rode #3, Eq. (22)
+        """
         c = self.SPACES['c']
         d = self.SPACES['d']
         k = self.SPACES['k']
@@ -642,15 +644,14 @@ class RodeSolver(object):
                 if newE >= 0:
                     out[i] = self.k_CB(newE)
                 else:
-                    out[i] = -1  # use -1 as placeholder for no solution
+                    out[i] = -1  # use -1 as placeholder for "no real solution" case
             return out
         else:
             raise ValueError("`pm` should be either '+' or '-'")
 
     def compute_spaces(self, n, p, Rc, num_k):
         """
-        Pre-computes a number of arrays that don't need to be updated during iteration process.
-        --> There is some spaghetti going on here, but it's much faster this way.
+        Pre-computes a number of arrays that don't need to be updated during iteration of `g_dist`.
         """
         # set maximum wave number
         self.k_MAX = self.get_k_MAX(self.Ef, self.T)
@@ -695,7 +696,11 @@ class RodeSolver(object):
         self.SPACES['r_pe'] = self.r_pe()
         self.SPACES['r_ac'] = self.r_ac()
         self.SPACES['r_ii'] = self.r_ii(n, p, Rc)
-        self.SPACES['r_el'] = self.SPACES['r_pe'] + self.SPACES['r_ac'] + self.SPACES['r_ii']
+        if self._is_intrinsic:
+            self.SPACES['r_el'] = self.SPACES['r_pe'] + self.SPACES['r_ac']
+        else:
+            self.SPACES['r_el'] = (self.SPACES['r_pe'] + self.SPACES['r_ac']
+                                   + self.SPACES['r_ii'])
 
         # lambda parameters for inelastic in/out scattering rates
         self.SPACES['li+'], self.SPACES['lo+'] = self.lambda_inout('+')

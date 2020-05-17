@@ -1,19 +1,16 @@
 import scipy.constants as const
-import numpy as np
+from numpy import sqrt, exp
 
 """
-See `bulkrodesolver.py` for bibliography. 
+This file contains hard-coded material objects, which provide the input constants for transport calculations.
 
-This file contains hard-coded material objects for InSb, InAs, and InP
-as described in Rode #3
-
-Everything is stored in S.I. units.
+NOTE: Everything is stored in S.I. units.
 """
 
 
 class Material(object):
     """
-    template for the material object; see instances below
+    Template for the material object; see instances below
     """
     DEFAULT_NUM = 0  # for numbering unnamed materials
 
@@ -51,8 +48,8 @@ class Material(object):
         self.Varshni_alpha = None  # [J/K]
         self.Varshni_beta = None  # [K]
 
-        # calculated parameters
-        # ---------------------
+        # calculated parameters (not needed to create material)
+        # -----------------------------------------------------
         self.wpo = None  # [Hz] polar-optical phonon frequency
 
         # flags
@@ -64,6 +61,9 @@ class Material(object):
         return "<materials.Material object: '{}'>".format(self.name)
 
     def modified(self, **kwargs):
+        """
+        Return an instance of the material with some modified parameters
+        """
         for key, value in kwargs.items():
             if hasattr(self, key):
                 self.__setattr__(key, value)
@@ -74,6 +74,9 @@ class Material(object):
 
     @classmethod
     def create(cls, **params):
+        """
+        Create an instance of Material by supplying the necessary parameters
+        """
         mat = cls()
 
         # copy over parameters from input dictionary
@@ -104,7 +107,7 @@ class Material(object):
 
     def get_meG(self, T):
         """
-        temperature-dependent Gamma-valley electron effective mass;
+        Temperature-dependent Gamma-valley electron effective mass;
 
         NOTE: I am not quite sure what Rode's '𝒫' parameter is in Eqs. (33) and (35).
 
@@ -134,7 +137,7 @@ class Material(object):
 
     def get_Eg(self, T):
         """
-        temperature-dependent effective mass band gap;
+        Temperature-dependent effective mass band gap;
         Rode #3, equation (34)
         """
         if self.Eg_expression in ['Vurgaftman', 'Varshni']:
@@ -149,8 +152,8 @@ class Material(object):
                              .format(self.Eg_expression))
 
 
-# INSTANCES REPRESENTING THE MATERIAL MODELS IN RODE #3
-# -----------------------------------------------------
+# INSTANCES REPRESENTING MATERIAL MODELS
+# --------------------------------------
 InSb = Material.create(
     name='InSb',
 
@@ -269,8 +272,8 @@ def ni_InSb_Hrostowski(T):
          Physical Review 100.6 (1955): 1672.
     """
 
-    return np.sqrt(
-        3.6e29 * T**3 * np.exp(-0.26 * const.e / const.k / T)
+    return sqrt(
+        3.6e29 * T**3 * exp(-0.26 * const.e / const.k / T)
     ) * 1e6  # [m^-3]
 
 
@@ -287,8 +290,8 @@ def ni_InAs_Folberth(T):
     Eg = (0.47 + alpha * T) * const.e  # [J] band gap
     m_eff = 0.10  # [1] effective mass
 
-    return np.sqrt(
-        2.4e31 * T**3 * m_eff**3 * np.exp(-Eg / const.k / T)
+    return sqrt(
+        2.4e31 * T**3 * m_eff**3 * exp(-Eg / const.k / T)
     ) * 1e6  # [m^-3]
 
 
@@ -303,6 +306,6 @@ def ni_InP_Folberth(T):
     """
     Eg = 1.34 * const.e
 
-    return np.sqrt(
-        7.e31 * T**3 * np.exp(-Eg / const.k / T)
+    return sqrt(
+        7.e31 * T**3 * exp(-Eg / const.k / T)
     ) * 1e6  # [m^-3]

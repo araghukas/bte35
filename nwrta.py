@@ -9,7 +9,14 @@ from scipy.special import iv, kv
 from fdint import fdk
 
 from materials import Material
-from _bessel_roots import alphas
+from bessel_roots import alphas
+
+"""
+Here, the BTE is solved using the relaxation time approximation for a circular nanowire conductor.
+The electron scattering rates are given by radius-dependent functions from literature.
+
+N.B. this code is not intended to calculate parameters for p-type conduction.
+"""
 
 
 def I0(x):
@@ -32,6 +39,11 @@ def K1(x):
     return kv(1, x)
 
 
+def lambda_DB(mat, T):
+    # thermal de Broglie wavelength [m]
+    return np.sqrt(2. * np.pi * const.hbar**2 / (mat.get_meG(T) * const.k * T))
+
+
 class NWRTAsolver(object):
     """
         Calculates non-equilibrium distribution function (solution of B.T.E.) using
@@ -45,13 +57,13 @@ class NWRTAsolver(object):
         Everything in S.I. units!
     """
 
-    # temperature gradient (arbitrary, cancelled out)
+    # temperature gradient (completely arbitrary, cancelled out)
     dTdx = 1e3  # [K/m]
 
-    # field strength (arbitrary, cancelled out)
+    # field strength (completely arbitrary, cancelled out)
     eps_field = 1e4  # [V/m]
 
-    def __init__(self, mat, T, R, n=None, p=None, n_subs=50):
+    def __init__(self, mat, T, R, n=None, p=None, n_subs=50, screen_ii=False, remote_ii=False):
 
         if isinstance(mat, Material):
             self.mat = mat
@@ -65,7 +77,7 @@ class NWRTAsolver(object):
         self.meG = self.mat.get_meG(T)
 
         # thermal de Broglie wavelength [m]
-        self.lambda_DB = np.sqrt(2. * np.pi * const.hbar**2 / (self.meG * const.k * T))
+        self.lambda_DB = lambda_DB(self.mat, T)
 
         # calculate maximum wave vector
         self.k_max = np.sqrt(2. * self.meG * 4. * const.e) / const.hbar
@@ -73,14 +85,20 @@ class NWRTAsolver(object):
         # set nanowire radius [m]
         self._R = R
         if 2 * R > self.lambda_DB:
-            warnings.warn("nanowire diameter exceeds thermal de Broglie wavelength ({:.2f} nm)"
-                          .format(self.lambda_DB * 1e9))
+            warnings.warn("nanowire diameter ({:.2f} nm) exceeds thermal de Broglie wavelength ({:.2f} nm)"
+                          .format(2. * self.R * 1e9, self.lambda_DB * 1e9))
 
         # number of sub-bands
         self.n_subs = 50
 
+        # ignore screening or not
+        self.screen_ii = screen_ii
+
+        # background or remote impurity scattering
+        self.remote_ii = remote_ii
+
         # number of occupied sub-bands
-        self.n_occ = 0  # assume all until `n` is set
+        self.n_occ = 0  # assume 0 until `n` is set
 
         # calculate confinement energy [J]
         self.E_lns_CB = self.E_conf(self.meG, idxs=[i for i in range(n_subs)])
@@ -139,7 +157,7 @@ class NWRTAsolver(object):
 
     @property
     def R(self):
-        # No setter for `R`! Create another solver.
+        # No setter for `R` to keep things simple! Create another solver.
         return self._R
 
     @property
@@ -154,7 +172,7 @@ class NWRTAsolver(object):
         self._Ef = self.calculate_Ef(new_n, self.T)
         self._p = self.calculate_p(self.Ef, self.T)
 
-        # determine number of sub-bands carrying 1%+ of total electrons
+        # determine number of sub-bands carrying .1%+ of total electrons
         self.n_occ = sum(self.n_js / self.n >= 0.001)
 
         # update `k_max`
@@ -171,15 +189,21 @@ class NWRTAsolver(object):
         # No setter for `p`!
         return self._p
 
-    # TRANSPORT
-    # ---------
+    # TOTAL TRANSPORT COEFFICIENTS
+    # ----------------------------
     def sigma(self):
+        """
+        Total electrical conductivity (electron contribution) [S/m]
+        """
         sigma_ = 0.
         for j in range(self.n_occ):
             sigma_ += self.sigma_j(j)
         return sigma_
 
     def S(self):
+        """
+        Total Seebeck coefficient [V/K]
+        """
         sum_ = 0.
         for j in range(self.n_occ):
             sum_ += self.sigma_j(j) * self.S_j(j)
@@ -188,13 +212,16 @@ class NWRTAsolver(object):
         return S_
 
     def kappa_e(self):
+        """
+        Total electronic thermal conductivity (electron contribution) [W/m/K]
+        """
         kappa_e_ = 0.
         for j in range(self.n_occ):
             kappa_e_ += self.kappa_e_j(j)
         return kappa_e_
 
-    # TRANSPORT (EACH BAND)
-    # ---------------------
+    # TRANSPORT COEFFICIENTS (EACH BAND)
+    # ---------------------------------
     def sigma_j(self, j):
         if j in self.sigma_js:
             return self.sigma_js[j]
@@ -261,55 +288,87 @@ class NWRTAsolver(object):
     # CONDUCTION BAND MODEL (PARABOLIC)
     # ---------------------------------
     def E_conf(self, m, idxs):
+        """
+        Confinement energies--i.e. sub-band minima--for sub-band indices `idxs` [J]
+        """
         E_lns = []
         for idx in idxs:
             k_ln = alphas[idx] / self.R  # root of ordinary Bessel function
             E_lns.append(const.hbar**2 * k_ln**2 / 2. / m)
-        return E_lns
+        return np.asarray(E_lns)
 
     def E_CB(self, j, k):
+        """
+        Conduction band dispersion relation, by sub-band [J]
+        """
         return self.E_lns_CB[j] + const.hbar**2 * k**2 / 2. / self.meG
 
     def kx_CB(self, E):
+        """
+        Get wave number from non-confined energy [1/m]
+        """
         return np.sqrt(2. * self.meG * E) / const.hbar
 
     def v_CB(self, k):
+        """
+        Electron group velocity [m/s];
+        The group velocity is defined as: 'v = dω/dk = 1/ℏ * dEdk'.
+        """
         return const.hbar * k / self.meG
 
     # DISTRIBUTION FUNCTIONS
     # ----------------------
     @staticmethod
     def bE(E, T):
+        """
+        Bose-Einstein distribution function
+        """
         return 1. / (np.exp(E / const.k / T) - 1)
 
     @staticmethod
     def fE(E, Ef, T):
         """
-        Fermi-Dirac distribution;
-         transformed to avoid overflow: 1/(1 + exp(x)) = exp(-x)/(1 + exp(-x))
+        The Fermi-Dirac distribution--function of energy;
+        transformed: 1/(1 + exp(x)) = exp(-x)/(1 + exp(-x))
         """
         exp_val = np.exp((Ef - E) / const.k / T)
         return exp_val / (1. + exp_val)
 
     @staticmethod
     def dfdE(E, Ef, T):
+        """
+        Energy derivative of the Fermi-Dirac distribution
+        """
         f0 = NWRTAsolver.fE(E, Ef, T)
         return - 1. / const.k / T * f0 * (1 - f0)
 
     def fk(self, j, k, Ef, T):
+        """
+        The Fermi-Dirac distribution--function of wave number and sub-band index;
+        (since `k(E)` is not unique given multiple sub-bands)
+        """
         E = self.E_CB(j, k)
         return NWRTAsolver.fE(E, Ef, T)
 
     def dfdk(self, j, k, Ef, T):
+        """
+        Wave number derivative of Fermi-Dirac distribution
+        """
         f0 = self.fk(j, k, Ef, T)
         return -1. / const.k / T * (const.hbar**2 * k / self.meG) * f0 * (1. - f0)
 
     def dEfdx(self, j):
+        """
+        Spatial gradient of the chemical potential (Fermi energy) [J/m]
+        """
         return 1. / self.T * (self.Ef - self.EJ(j)) / self.dTdx
 
     # CARRIER CONCENTRATIONS [m^-3]
     # -----------------------------
     def calculate_n(self, Ef):
+        """
+        Calculates total electron concentration [1/m^3]
+        """
         n_ = 0.
         for j in range(self.n_subs):
             n_ += self.calculate_n_j(j, Ef)
@@ -317,6 +376,9 @@ class NWRTAsolver(object):
         return n_
 
     def calculate_n_j(self, j, Ef):
+        """
+        Calculates electron concentration in the `j`th sub-band [1/m^3]
+        """
         c = 1. / (np.pi**2 * self.R**2) * np.sqrt(2. * const.k * self.T * self.meG) / const.hbar
         eta = (float(Ef) - self.E_lns_CB[j]) / const.k / self.T
         n_j = c * fdk(-1 / 2, eta)
@@ -324,29 +386,40 @@ class NWRTAsolver(object):
         return n_j
 
     def calculate_p(self, Ef, T):
+        """
+        Calculates total hole concentration [1/m^3]
+        """
         c = 1. / (np.pi**2 * self.R**2) * np.sqrt(2. * const.k * T * self.mat.mh_DOS) / const.hbar
         p_ = 0.
         Eg = self.mat.get_Eg(T)
         for E_ln in self.E_lns_VB:
-            eta = -(float(Ef) - E_ln - Eg) / const.k / T
+            eta = -(float(Ef) + E_ln + Eg) / const.k / T
             p_ += c * fdk(-1 / 2, eta)
 
         return p_
 
     def calculate_Ef(self, n, T):
-        guess = -self.mat.get_Eg(T) / 3.
+        """
+        Calculates Fermi energy at given temperature and electron concentration
+        by inverting expression for `n`
+        """
+        guess = -self.mat.get_Eg(T) / 2 + self.E_lns_CB[0]
         Ef_ = fmin(lambda Ef: abs(np.log(n / self.calculate_n(Ef))),
                    x0=guess, maxiter=500, ftol=1e-8, disp=False)
         check_n = self.calculate_n(Ef_)
         err = abs(n - check_n) / n
         if err >= 0.01:
-            print("large Ef finding error (n = {:.2e}/cm^-3): {:.2f} %"
-                  .format(n / 1e6, err * 1e2))
+            warnings.warn("large Ef finding error (n = {:.2e}/cm^-3): {:.2f} %"
+                          .format(n / 1e6, err * 1e2))
         return Ef_
 
-    # SCATTERING RATES
-    # ----------------
+    # SCATTERING RATES (S.I. units)
+    # -----------------------------
     def r_ac(self, k):
+        """
+        Acoustic deformation potential scattering rate [1/s];
+        Fishman (1987), Eq. (26)
+        """
         k = np.abs(k)
         rate_ac = (
                 2 * self.meG * self.mat.E1**2 * const.k * self.T
@@ -355,6 +428,10 @@ class NWRTAsolver(object):
         return rate_ac
 
     def r_pe(self, k):
+        """
+        Piezoelectric scattering rate [1/s];
+        Fishman (1987); Eq. (31)
+        """
         k = np.abs(k)
         rate_pe = (
                 8 * self.meG * const.e**2 * self.mat.Pz**2 * const.k * self.T
@@ -365,6 +442,10 @@ class NWRTAsolver(object):
         return rate_pe / (4. * np.pi)
 
     def r_po(self, k):
+        """
+        Polar optical phonon scattering relaxation rate [1/s];
+        Fishman (1987), Eq. (35)
+        """
         k = np.abs(k)
         q0 = np.sqrt(2. * self.meG * self.Epo) / const.hbar
         qp = k + np.sqrt(k**2 + q0**2)
@@ -390,44 +471,63 @@ class NWRTAsolver(object):
 
     def r_ii(self, j, k, Z=1, screen=False):
         """
-        Ionized impurity scattering rate (background) at finite temperature;
-        Lee, Eq (23)
+        Ionized impurity scattering rate at finite temperature [1/s];
+        Lee (1985), Eqs. (23) & (24)
         """
         k = np.abs(k)
         Q = 2. * k * self.R
-        N = self.calculate_n_j(j, self.Ef)
+        N = self.n + self.p
+        # N = self.calculate_n_j(j, self.Ef)
 
         if screen:
+            eps = self.eps1D(j, Q / self.R)
+        elif self.screen_ii:
             eps = self.eps1D(j, Q / self.R)
         else:
             eps = self.mat.eps_lo
 
-        rate_ii = (
-                          8 * np.pi * Z**2 * const.e**4 * self.meG * N
-                          / (const.hbar**3 * k**3 * eps**2)
-                          * (2. / Q * K1(Q) * I0(Q)
-                             - 4. / Q**2 * K1(Q) * I1(Q)
-                             - I1(Q)**2 * (K1(Q)**2 - K0(Q)**2))
-                  ) / (4. * np.pi)**2
+        if self.remote_ii:
+            # expression for 'remote impurity' (modulation doped) case
+            rate_ii = (
+                              8 * np.pi * Z**2 * const.e**4 * self.meG * N
+                              / (const.hbar**3 * k**3 * eps**2)
+                              * (I1(Q)**2 * (K1(Q)**2 - K0(Q)**2))
+                      ) / (4. * np.pi)**2
+        else:
+            # expression for 'background impurity' case
+            rate_ii = (
+                              8 * np.pi * Z**2 * const.e**4 * self.meG * N
+                              / (const.hbar**3 * k**3 * eps**2)
+                              * (2. / Q * K1(Q) * I0(Q)
+                                 - 4. / Q**2 * K1(Q) * I1(Q)
+                                 - I1(Q)**2 * (K1(Q)**2 - K0(Q)**2))
+                      ) / (4. * np.pi)**2
         return rate_ii
 
     def r_ii0(self, k, Z=1.):
         """
-        Ionized impurity scattering rate (background) at zero temperature;
+        Ionized impurity scattering rate at zero temperature;
         Lee, Eq (23)
         """
         k = np.abs(k)
         Q = 2. * k * self.R
-        N = (self.n + self.p)
+        N = self.n
         eps = self.eps1D0(Q / self.R)
 
-        rate_ii0 = (
-                           8 * np.pi * Z**2 * const.e**4 * self.meG * N
-                           / (const.hbar**3 * k**3 * eps**2)
-                           * (2. / Q * K1(Q) * I0(Q)
-                              - 4. / Q**2 * K1(Q) * I1(Q)
-                              - I1(Q)**2 * (K1(Q)**2 - K0(Q)**2))
-                   ) / (4. * np.pi)**2
+        if self.remote_ii:
+            rate_ii0 = (
+                               8 * np.pi * Z**2 * const.e**4 * self.meG * N
+                               / (const.hbar**3 * k**3 * eps**2)
+                               * (I1(Q)**2 * (K1(Q)**2 - K0(Q)**2))
+                       ) / (4. * np.pi)**2
+        else:
+            rate_ii0 = (
+                               8 * np.pi * Z**2 * const.e**4 * self.meG * N
+                               / (const.hbar**3 * k**3 * eps**2)
+                               * (2. / Q * K1(Q) * I0(Q)
+                                  - 4. / Q**2 * K1(Q) * I1(Q)
+                                  - I1(Q)**2 * (K1(Q)**2 - K0(Q)**2))
+                       ) / (4. * np.pi)**2
         return rate_ii0
 
     def r_tot(self, j, k):
@@ -435,28 +535,6 @@ class NWRTAsolver(object):
 
     def tau(self, j, k):
         return 1. / self.r_tot(j, k)
-
-    # DIELECTRIC RESPONSE / SCREENING
-    # -------------------------------
-    # def Fq(self, q, Ef, T):
-    #     """
-    #     Static Lindhard function at finite temperature;
-    #     Lee, Eq. (12)
-    #
-    #     NOTE: take `L=1` since it's cancelled anyway
-    #     """
-    #     if np.isscalar(q):
-    #         q = np.asarray(q)
-    #         if q.ndim == 0:
-    #             q = q[None]
-    #
-    #     output = np.zeros(q.shape)
-    #     for i, q_ in enumerate(q):
-    #         output[i] = quad(
-    #             lambda k: ((self.fk(k + q_, Ef, T) - self.fk(k, Ef, T))
-    #                        / (self.E_CB(k + q_) - self.E_CB(k))),
-    #             -self.k_max, self.k_max)[0]
-    #     return output * 1 / np.pi
 
     def Fq(self, j, q, Ef, T):
         """
@@ -501,7 +579,7 @@ class NWRTAsolver(object):
         (zero temperature)
         Lee, Eq. (13)
 
-        `q` is a wave vector [1/m]
+        `q` is a wave number [1/m]
 
         NOTE: second term divided by 4*Pi to work with out units (S.I.)
         """
@@ -511,7 +589,7 @@ class NWRTAsolver(object):
                 +
                 (8 * const.e**2 / (q**2 * self.R**2)
                  * (K1(q * self.R) * I1(q * self.R) - .5)
-                 * Fq0_) / (4. * np.pi)  # dividing by 4Pi here gives you Lee's figure
+                 * Fq0_) / (4. * np.pi)  # dividing by 4Pi here gives you Lee's figure 2.
         )
 
     def Fq0(self, q):
@@ -533,36 +611,36 @@ class NWRTAsolver(object):
     # UTILITIES
     # ---------
     def get_klims(self, j, delta=15.):
+        """
+        Return approximate limits and bad points to make integrations more accurate;
+        """
         Ef = self.Ef
         T = self.T
         m = self.meG
 
+        # sample integrand points
         ks = np.linspace(1., self.k_max, 2000)
         i1_vals = self.E_CB(j, ks) * self.v_CB(ks) * self.tau(j, ks) * self.dfdk(j, ks, Ef, T)
-        # clean NaN's
-        clean_indices = ~np.isnan(i1_vals)
-        i1_vals = i1_vals[clean_indices]
-        ks = ks[clean_indices]
 
+        # clean NaN's
+        good_indices = ~np.isnan(i1_vals)
+        i1_vals = i1_vals[good_indices]
+        ks = ks[good_indices]
+
+        # determine centre of nonzero portion
         min_i1 = np.min(i1_vals)
         min_where = np.where(i1_vals == min_i1)[0]
         if len(min_where) > 1:
             min_idx = int(max(min_where))
-        elif len(min_where) == 0:
-            print('i1_values')
-            print()
-            print(i1_vals)
-            raise ValueError
         else:
             min_idx = int(min_where)
-
         k_peak = ks[min_idx]
 
+        # calculate integration limits
         E_peak = const.hbar**2 * k_peak**2 / 2. / m
         E_low = E_peak - delta * const.k * T
         E_hi = E_peak + delta * const.k * T
-
-        k_low = np.sqrt(2. * m * E_low) / const.hbar if E_low > 0. else 0.
-        k_hi = np.sqrt(2. * m * E_hi) / const.hbar
+        k_low = np.sqrt(2. * m * E_low) / const.hbar if E_low > 0. else 0.  # lower limit
+        k_hi = np.sqrt(2. * m * E_hi) / const.hbar  # upper limit
 
         return k_low, k_peak, k_hi

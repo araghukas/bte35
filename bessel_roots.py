@@ -5,8 +5,9 @@ kind.
 
 The quantum numbers (l, n) imply the `n`th root of the order `l` Bessel function.
 
-I don't know of a clever way to the order the `n`th roots across orders, so I've hard
-coded the first 50 roots `alphas` and the corresponding quantum numbers `lns` below.
+I don't know of a clever way to the order the `n`th roots across function orders, so I've
+calculated by brute for and hard coded the first 50 roots `alphas` with the corresponding
+quantum numbers (`lns`) below.
 """
 
 alphas = [
